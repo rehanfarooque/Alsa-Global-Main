@@ -1,0 +1,53 @@
+{
+  "ids": [
+    "immutable-x", "gala", "the-sandbox", "axie-infinity",
+    "monero", "zcash",
+    "the-graph", "arweave", "helium", "ankr",
+    "pepe", "bonk", "dogwifhat", "floki",
+    "aptos", "sui", "sei-network", "injective-protocol", "celestia", "pyth-network"
+  ],
+  "meta": {
+    "immutable-x":         { "name": "Immutable X",    "symbol": "IMX"     },
+    "gala":                { "name": "Gala",            "symbol": "GALA"    },
+    "the-sandbox":         { "name": "The Sandbox",     "symbol": "SAND"    },
+    "axie-infinity":       { "name": "Axie Infinity",   "symbol": "AXS"     },
+    "monero":              { "name": "Monero",          "symbol": "XMR"     },
+    "zcash":               { "name": "Zcash",           "symbol": "ZEC"     },
+    "the-graph":           { "name": "The Graph",       "symbol": "GRT"     },
+    "arweave":             { "name": "Arweave",         "symbol": "AR"      },
+    "helium":              { "name": "Helium",          "symbol": "HNT"     },
+    "ankr":                { "name": "Ankr",            "symbol": "ANKR"    },
+    "pepe":                { "name": "Pepe",            "symbol": "PEPE"    },
+    "bonk":                { "name": "Bonk",            "symbol": "BONK"    },
+    "dogwifhat":           { "name": "dogwifhat",       "symbol": "WIF"     },
+    "floki":               { "name": "Floki",           "symbol": "FLOKI"   },
+    "aptos":               { "name": "Aptos",           "symbol": "APT"     },
+    "sui":                 { "name": "Sui",             "symbol": "SUI"     },
+    "sei-network":         { "name": "Sei",             "symbol": "SEI"     },
+    "injective-protocol":  { "name": "Injective",       "symbol": "INJ"     },
+    "celestia":            { "name": "Celestia",        "symbol": "TIA"     },
+    "pyth-network":        { "name": "Pyth Network",    "symbol": "PYTH"    }
+  },
+  "coinpaprika": {
+    "immutable-x":         "imx-immutable-x",
+    "gala":                "gala-gala",
+    "the-sandbox":         "sand-the-sandbox",
+    "axie-infinity":       "axs-axie-infinity",
+    "monero":              "xmr-monero",
+    "zcash":               "zec-zcash",
+    "the-graph":           "grt-the-graph",
+    "arweave":             "ar-arweave",
+    "helium":              "hnt-helium",
+    "ankr":                "ankr-ankr-network",
+    "pepe":                "pepe-pepe",
+    "bonk":                "bonk-bonk",
+    "dogwifhat":           "wif-dogwifcoin",
+    "floki":               "floki-floki-inu",
+    "aptos":               "apt-aptos",
+    "sui":                 "sui-sui",
+    "sei-network":         "sei-sei",
+    "injective-protocol":  "inj-injective-protocol",
+    "celestia":            "tia-celestia",
+    "pyth-network":        "pyth-pyth-network"
+  }
+}
