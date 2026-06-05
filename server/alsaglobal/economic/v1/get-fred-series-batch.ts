@@ -13,6 +13,48 @@ import type {
 import { getCachedJson } from '../../../_shared/redis';
 import { toUniqueSortedLimited } from '../../../_shared/normalize-list';
 import { applyFredObservationLimit, fredSeedKey, normalizeFredLimit } from './_fred-shared';
+import { CHROME_UA } from '../../../_shared/constants';
+
+// Series that can be fetched live from FRED (US Treasury yields + VIX + FRED macro)
+const FRED_LIVE_ALLOWED = new Set([
+  'DGS1MO', 'DGS3MO', 'DGS6MO', 'DGS1', 'DGS2', 'DGS5', 'DGS10', 'DGS30',
+  'VIXCLS', 'FEDFUNDS', 'SOFR', 'T10Y2Y', 'T10Y3M',
+]);
+
+const FRED_SERIES_META: Record<string, { title: string; units: string }> = {
+  DGS1MO: { title: '1-Month Treasury', units: '%' },
+  DGS3MO: { title: '3-Month Treasury', units: '%' },
+  DGS6MO: { title: '6-Month Treasury', units: '%' },
+  DGS1:   { title: '1-Year Treasury', units: '%' },
+  DGS2:   { title: '2-Year Treasury', units: '%' },
+  DGS5:   { title: '5-Year Treasury', units: '%' },
+  DGS10:  { title: '10-Year Treasury', units: '%' },
+  DGS30:  { title: '30-Year Treasury', units: '%' },
+  VIXCLS: { title: 'CBOE Volatility Index', units: 'Index' },
+  FEDFUNDS: { title: 'Federal Funds Rate', units: '%' },
+  SOFR:   { title: 'Secured Overnight Financing Rate', units: '%' },
+  T10Y2Y: { title: '10-Year minus 2-Year', units: '%' },
+  T10Y3M: { title: '10-Year minus 3-Month', units: '%' },
+};
+
+async function fetchFredSeriesLive(seriesId: string, apiKey: string, limit: number): Promise<FredSeries | null> {
+  try {
+    const startDate = new Date(Date.now() - Math.max(limit, 40) * 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&observation_start=${startDate}&api_key=${encodeURIComponent(apiKey)}&file_type=json`;
+    const resp = await fetch(url, { headers: { 'User-Agent': CHROME_UA }, signal: AbortSignal.timeout(10_000) });
+    if (!resp.ok) return null;
+    const json = await resp.json() as { observations?: Array<{ date: string; value: string }> };
+    const observations = (json.observations ?? [])
+      .filter(o => o.value !== '.' && o.value !== '')
+      .slice(-limit)
+      .map(o => ({ date: o.date, value: parseFloat(o.value) }));
+    if (observations.length === 0) return null;
+    const meta = FRED_SERIES_META[seriesId] ?? { title: seriesId, units: '' };
+    return { seriesId, title: meta.title, units: meta.units, frequency: 'd', observations };
+  } catch {
+    return null;
+  }
+}
 
 const ALLOWED_SERIES = new Set<string>([
   'WALCL', 'FEDFUNDS', 'T10Y2Y', 'UNRATE', 'CPIAUCSL', 'DGS10', 'VIXCLS',
@@ -46,6 +88,23 @@ export async function getFredSeriesBatch(
       if (entry?.status !== 'fulfilled' || !entry.value) continue;
       const cached = entry.value as { series?: FredSeries };
       if (cached?.series) results[id] = applyFredObservationLimit(cached.series, limit);
+    }
+
+    // If Redis returned no data, fall back to live FRED API for supported series
+    const missingIds = limitedList.filter(id => !results[id] && FRED_LIVE_ALLOWED.has(id));
+    if (missingIds.length > 0) {
+      const fredKey = process.env.FRED_API_KEY;
+      if (fredKey) {
+        const liveResults = await Promise.allSettled(
+          missingIds.map(id => fetchFredSeriesLive(id, fredKey, limit))
+        );
+        for (let i = 0; i < missingIds.length; i++) {
+          const r = liveResults[i];
+          if (r?.status === 'fulfilled' && r.value) {
+            results[missingIds[i]!] = r.value;
+          }
+        }
+      }
     }
 
     return {

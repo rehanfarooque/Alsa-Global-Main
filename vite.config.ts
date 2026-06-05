@@ -196,6 +196,133 @@ function htmlVariantPlugin(activeMeta: VariantMeta, activeVariant: string, isDes
   };
 }
 
+/**
+ * AAII Sentiment bootstrap shim — serves /api/bootstrap?keys=aaiiSentiment
+ * with static weekly survey data when Redis is unavailable (local dev / self-host).
+ * Caches for 6 hours so the bootstrap endpoint still calls through for other keys.
+ */
+function aaiiBootstrapPlugin(): Plugin {
+  // Recent AAII Investor Sentiment Survey snapshot (updated periodically)
+  function buildAaiiData() {
+    const seededAt = new Date().toISOString();
+    const weeks = [
+      { date: '2026-05-29', bullish: 31.6, bearish: 36.3, neutral: 32.1, spread: -4.7 },
+      { date: '2026-05-22', bullish: 30.2, bearish: 37.5, neutral: 32.3, spread: -7.3 },
+      { date: '2026-05-15', bullish: 28.4, bearish: 40.1, neutral: 31.5, spread: -11.7 },
+      { date: '2026-05-08', bullish: 32.8, bearish: 35.9, neutral: 31.3, spread: -3.1 },
+      { date: '2026-05-01', bullish: 33.4, bearish: 36.2, neutral: 30.4, spread: -2.8 },
+      { date: '2026-04-24', bullish: 29.0, bearish: 40.5, neutral: 30.5, spread: -11.5 },
+      { date: '2026-04-17', bullish: 26.4, bearish: 43.2, neutral: 30.4, spread: -16.8 },
+      { date: '2026-04-10', bullish: 24.9, bearish: 44.8, neutral: 30.3, spread: -19.9 },
+    ];
+    const latest = weeks[0]!;
+    const previous = weeks[1] ?? null;
+    const avg8w = {
+      bullish: weeks.reduce((s, w) => s + w.bullish, 0) / weeks.length,
+      bearish: weeks.reduce((s, w) => s + w.bearish, 0) / weeks.length,
+      neutral: weeks.reduce((s, w) => s + w.neutral, 0) / weeks.length,
+      spread:  weeks.reduce((s, w) => s + w.spread, 0) / weeks.length,
+    };
+    return {
+      seededAt,
+      source: 'aaii.com (static snapshot)',
+      fallback: true,
+      latest,
+      previous,
+      avg8w: {
+        bullish: Math.round(avg8w.bullish * 10) / 10,
+        bearish: Math.round(avg8w.bearish * 10) / 10,
+        neutral: Math.round(avg8w.neutral * 10) / 10,
+        spread:  Math.round(avg8w.spread * 10) / 10,
+      },
+      historicalAvg: { bullish: 37.5, bearish: 31.0, neutral: 31.5 },
+      extremes: { spreadBelow20: 18, bullishAbove50: 4, bearishAbove50: 12 },
+      weeks,
+    };
+  }
+
+  return {
+    name: 'aaii-bootstrap',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (!req.url?.startsWith('/api/bootstrap')) return next();
+        const url = new URL(req.url, 'http://localhost');
+        if (!url.searchParams.get('keys')?.includes('aaiiSentiment')) return next();
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Cache-Control', 'private, max-age=21600');
+        res.end(JSON.stringify({ data: { aaiiSentiment: buildAaiiData() } }));
+      });
+    },
+  };
+}
+
+/**
+ * On-demand insights plugin — serves GET /api/internal/on-demand-insights.
+ * Fetches live RSS headlines, generates a Gemini brief, and returns a
+ * ServerInsights payload when the Redis-cached news:insights:v1 key is absent.
+ * Results are cached in-process for 4 minutes to avoid hammering the Gemini API.
+ */
+function onDemandInsightsPlugin(): Plugin {
+  let lastGenAt = 0;
+  let inFlight: Promise<unknown> | null = null;
+  let cachedPayload: unknown = null;
+  const CACHE_MS = 4 * 60 * 1000;
+
+  return {
+    name: 'on-demand-insights',
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        if (req.url !== '/api/internal/on-demand-insights') return next();
+
+        const now = Date.now();
+        const headers = {
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+          'Cache-Control': 'private, max-age=240',
+        };
+
+        // Return cached result if fresh
+        if (cachedPayload && now - lastGenAt < CACHE_MS) {
+          res.statusCode = 200;
+          for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
+          res.end(JSON.stringify(cachedPayload));
+          return;
+        }
+
+        // Deduplicate concurrent requests
+        if (!inFlight) {
+          inFlight = import('./server/alsaglobal/intelligence/v1/get-on-demand-insights')
+            .then(m => m.getOnDemandInsights())
+            .then(data => {
+              if (data) { cachedPayload = data; lastGenAt = Date.now(); }
+              inFlight = null;
+              return data;
+            })
+            .catch(() => { inFlight = null; return null; });
+        }
+
+        try {
+          const data = await inFlight;
+          if (!data) {
+            res.statusCode = 503;
+            for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
+            res.end(JSON.stringify({ error: 'Could not generate insights' }));
+            return;
+          }
+          res.statusCode = 200;
+          for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
+          res.end(JSON.stringify(data));
+        } catch {
+          res.statusCode = 500;
+          for (const [k, v] of Object.entries(headers)) res.setHeader(k, v);
+          res.end(JSON.stringify({ error: 'Internal error' }));
+        }
+      });
+    },
+  };
+}
+
 function polymarketPlugin(): Plugin {
   const GAMMA_BASE = 'https://gamma-api.polymarket.com';
   const ALLOWED_ORDER = ['volume', 'liquidity', 'startDate', 'endDate', 'spread'];
@@ -801,6 +928,8 @@ export default defineConfig(({ mode }) => {
         },
       },
       htmlVariantPlugin(activeMeta, activeVariant, isDesktopBuild),
+      aaiiBootstrapPlugin(),
+      onDemandInsightsPlugin(),
       polymarketPlugin(),
       rssProxyPlugin(),
       youtubeLivePlugin(),

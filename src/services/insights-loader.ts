@@ -82,18 +82,34 @@ export function getServerInsights(): ServerInsights | null {
  */
 export async function fetchServerInsights(timeoutMs = 5_000): Promise<ServerInsights | null> {
   if (cached && isFresh(cached)) return cached;
+
+  // 1. Try the bootstrap cache (Redis-backed, fast)
   try {
     const resp = await fetch(toApiUrl('/api/bootstrap?keys=insights'), {
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (!resp.ok) return null;
-    const payload = (await resp.json()) as { data?: { insights?: unknown } };
-    const data = validateInsights(payload.data?.insights);
-    if (data) cached = data;
-    return data;
+    if (resp.ok) {
+      const payload = (await resp.json()) as { data?: { insights?: unknown } };
+      const data = validateInsights(payload.data?.insights);
+      if (data) { cached = data; return data; }
+    }
   } catch {
-    return null;
+    // fall through to on-demand
   }
+
+  // 2. Bootstrap returned nothing (no Redis) — generate on-demand via Gemini + RSS
+  try {
+    const resp = await fetch(toApiUrl('/api/internal/on-demand-insights'), {
+      signal: AbortSignal.timeout(20_000), // Gemini can take up to ~15s
+    });
+    if (!resp.ok) return null;
+    const data = validateInsights(await resp.json());
+    if (data) { cached = data; return data; }
+  } catch {
+    // ignore
+  }
+
+  return null;
 }
 
 export function setServerInsights(data: ServerInsights): void {

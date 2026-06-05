@@ -22612,19 +22612,58 @@ body.map-width-resizing {
   margin-right: 4px;
 }
 
+.framework-settings-btn--hidden {
+  display: none !important;
+}
 .framework-settings-btn {
   font-size: 12px;
   opacity: 0.6;
-  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
-}
-.framework-settings-btn:hover,
-.framework-settings-btn[aria-expanded="true"] {
-  opacity: 1;
-}
-.framework-settings-btn--locked {
-  opacity: 0.35;
+  transition: opacity 0.15s ease;
 }
 
+/* ── Inline framework selector (replaces gear-icon popup) ── */
+.framework-selector-inline {
+  display: flex;
+  align-items: center;
+  margin-left: 4px;
+}
+.framework-inline-select {
+  font-size: 10px;
+  font-family: inherit;
+  background: var(--overlay-subtle, rgba(255,255,255,0.06));
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-dim);
+  padding: 2px 4px;
+  cursor: pointer;
+  max-width: 130px;
+  transition: color 0.15s, border-color 0.15s;
+  appearance: auto;
+}
+.framework-inline-select:hover {
+  color: var(--text);
+  border-color: var(--accent, #4af);
+}
+.framework-inline-select:focus {
+  outline: 1px solid var(--accent, #4af);
+  color: var(--text);
+}
+.framework-inline-select option {
+  background: var(--bg-panel, #0f1117);
+  color: var(--text);
+}
+.framework-inline-locked {
+  font-size: 10px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-dim);
+  padding: 2px 6px;
+  opacity: 0.5;
+  cursor: pointer;
+}
+
+/* keep popup styles for any remaining references */
 .framework-settings-popup {
   position: fixed;
   z-index: 9999;
@@ -22638,12 +22677,7 @@ body.map-width-resizing {
   min-width: 190px;
   box-shadow: 0 4px 16px rgba(0,0,0,0.45);
 }
-.framework-settings-label {
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--text-dim);
-}
+.framework-settings-label { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
 .framework-popup-select {
   font-size: 12px;
   background: var(--overlay-subtle, rgba(255,255,255,0.05));
@@ -22654,15 +22688,8 @@ body.map-width-resizing {
   cursor: pointer;
   width: 100%;
 }
-.framework-popup-select:focus {
-  outline: 1px solid var(--accent);
-}
-.framework-settings-note {
-  font-size: 10px;
-  color: var(--text-dim);
-  line-height: 1.4;
-  opacity: 0.7;
-}
+.framework-popup-select:focus { outline: 1px solid var(--accent); }
+.framework-settings-note { font-size: 10px; color: var(--text-dim); line-height: 1.4; opacity: 0.7; }
 
 /* ── WM Analyst Chat Panel ──────────────────────────────────────── */
 .chat-analyst-wrapper {

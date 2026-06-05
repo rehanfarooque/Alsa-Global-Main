@@ -117,7 +117,7 @@ export async function getMacroSignals(
     const isVolLow = vixNow < 20;
 
     const isMomentumPositive = btcChange30d > 0;
-    const isBtcAboveSma200 = btcSparkline.length > 0 && btcPriceNow > sma(btcSparkline, btcSparkline.length, btcSparkline.length - 1);
+    const isBtcAboveSma200 = btcSparkline.length > 0 && btcPriceNow > sma(btcSparkline, Math.min(200, btcSparkline.length));
 
     let bullishCount = 0;
     if (isBullTrend) bullishCount++;

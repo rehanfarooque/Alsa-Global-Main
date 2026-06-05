@@ -6,6 +6,39 @@ import type {
 } from '../../../../src/generated/server/alsaglobal/economic/v1/service_server';
 import { getCachedJson } from '../../../_shared/redis';
 import { CISS_STALE_THRESHOLD_MS } from '../../../../src/shared/ciss-staleness';
+import { CHROME_UA } from '../../../_shared/constants';
+
+async function fetchAnfciFromFred(): Promise<GetEuFsiResponse | null> {
+  const apiKey = process.env.FRED_API_KEY;
+  if (!apiKey) return null;
+  try {
+    const startDate = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const url = `https://api.stlouisfed.org/fred/series/observations?series_id=ANFCI&observation_start=${startDate}&api_key=${encodeURIComponent(apiKey)}&file_type=json`;
+    const resp = await fetch(url, { headers: { 'User-Agent': CHROME_UA }, signal: AbortSignal.timeout(10_000) });
+    if (!resp.ok) return null;
+    const json = await resp.json() as { observations?: Array<{ date: string; value: string }> };
+    const raw = (json.observations ?? []).filter(o => o.value !== '.' && o.value !== '');
+    if (raw.length === 0) return null;
+    const history: EuFsiObservation[] = raw.map(o => ({
+      date: o.date,
+      // Normalize ANFCI (range ~-1 to +3) to CISS-like scale [0,1]
+      value: Math.max(0, Math.min(1, (parseFloat(o.value) + 0.5) / 2)),
+    }));
+    const last = history[history.length - 1]!;
+    const label = last.value < 0.15 ? 'Low' : last.value < 0.35 ? 'Moderate' : last.value < 0.6 ? 'Elevated' : 'High';
+    return {
+      latestValue: last.value,
+      latestDate: last.date,
+      label,
+      history,
+      seededAt: new Date().toISOString(),
+      unavailable: false,
+      stale: false,
+    };
+  } catch {
+    return null;
+  }
+}
 
 const SEED_CACHE_KEY = 'economic:fsi-eu:v1';
 
@@ -36,7 +69,11 @@ export async function getEuFsi(
 ): Promise<GetEuFsiResponse> {
   try {
     const raw = await getCachedJson(SEED_CACHE_KEY, true) as Record<string, unknown> | null;
-    if (!raw || raw.unavailable) return buildFallbackResult();
+    if (!raw || raw.unavailable) {
+      const live = await fetchAnfciFromFred();
+      if (live) return live;
+      return buildFallbackResult();
+    }
 
     const history = (Array.isArray(raw.history) ? raw.history : []) as EuFsiObservation[];
     const latestDate = String(raw.latestDate ?? '');
