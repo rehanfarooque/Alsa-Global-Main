@@ -141,18 +141,8 @@ import type { Panel } from '@/components/Panel';
  * The static test in tests/panel-config-guardrails.test.mjs enforces
  * `apiKeyPanels ⊆ WEB_PREMIUM_PANELS` so this drift can't recur silently.
  */
-const WEB_PREMIUM_PANELS = new Set([
-  'stock-analysis',
-  'stock-backtest',
-  'daily-market-brief',
-  'market-implications',
-  'deduction',
-  'chat-analyst',
-  'wsb-ticker-scanner',
-  'latest-brief',
-  'regional-intelligence',
-  'trade-policy',
-]);
+// AlsaGlobal: self-hosted build — no panels are premium-gated.
+const WEB_PREMIUM_PANELS = new Set<string>();
 
 /**
  * Panels that require a Clerk-authenticated PRO account specifically.
@@ -167,9 +157,8 @@ const WEB_PREMIUM_PANELS = new Set([
  * inconsistency to the layout gating layer so the user sees the
  * correct "Upgrade to Pro" CTA instead of a doomed fetch.
  */
-const WEB_CLERK_PRO_ONLY_PANELS = new Set([
-  'latest-brief',
-]);
+// AlsaGlobal: self-hosted build — no Clerk-only panels.
+const WEB_CLERK_PRO_ONLY_PANELS = new Set<string>();
 
 export interface PanelLayoutManagerCallbacks {
   openCountryStory: (code: string, name: string) => void;

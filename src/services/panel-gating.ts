@@ -35,16 +35,9 @@ export function hasPremiumAccess(_authState?: AuthSession): boolean {
  * Non-premium panels always return NONE.
  */
 export function getPanelGateReason(
-  authState: AuthSession,
-  isPremium: boolean,
+  _authState: AuthSession,
+  _isPremium: boolean,
 ): PanelGateReason {
-  // Non-premium panels are never gated
-  if (!isPremium) return PanelGateReason.NONE;
-
-  // API key, tester key, or Clerk Pro: always unlocked
-  if (hasPremiumAccess(authState)) return PanelGateReason.NONE;
-
-  // Web gating based on Clerk auth state
-  if (!authState.user) return PanelGateReason.ANONYMOUS;
-  return PanelGateReason.FREE_TIER;
+  // AlsaGlobal: self-hosted build — all panels unlocked, no gating ever.
+  return PanelGateReason.NONE;
 }

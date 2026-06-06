@@ -144,30 +144,26 @@ export function getEntitlementState(): EntitlementState | null {
 
 /**
  * Check whether a specific feature flag is truthy in the current entitlement state.
+ * AlsaGlobal: self-hosted build — all features enabled for everyone.
  */
-export function hasFeature(flag: keyof EntitlementState['features']): boolean {
-  if (currentState === null) return false;
-  return Boolean(currentState.features[flag]);
+export function hasFeature(_flag: keyof EntitlementState['features']): boolean {
+  return true;
 }
 
 /**
  * Check whether the user's tier meets or exceeds the given minimum.
+ * AlsaGlobal: always true.
  */
-export function hasTier(minTier: number): boolean {
-  if (currentState === null) return false;
-  return currentState.features.tier >= minTier;
+export function hasTier(_minTier: number): boolean {
+  return true;
 }
 
 /**
  * Simple "is this a paying user" check.
- * Returns true if entitlement data exists, plan is not free, and hasn't expired.
+ * AlsaGlobal: self-hosted build — always entitled.
  */
 export function isEntitled(): boolean {
-  return (
-    currentState !== null &&
-    currentState.planKey !== 'free' &&
-    currentState.validUntil >= Date.now()
-  );
+  return true;
 }
 
 /**

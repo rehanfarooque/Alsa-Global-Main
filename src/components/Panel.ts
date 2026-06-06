@@ -4,7 +4,6 @@ import { t } from '../services/i18n';
 import { h, replaceChildren, safeHtml } from '../utils/dom-utils';
 import { trackPanelResized } from '@/services/analytics';
 import { getAiFlowSettings } from '@/services/ai-flow-settings';
-import { getSecretState } from '@/services/runtime-config';
 import { PanelGateReason } from '@/services/panel-gating';
 
 export type PanelSeverity = 'critical' | 'high' | 'medium' | 'low' | 'none';
@@ -23,6 +22,9 @@ export interface PanelOptions {
 }
 
 const lockSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg>`;
+
+const PANEL_EXPAND_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`;
+const PANEL_COLLAPSE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="10" y1="14" x2="3" y2="21"/><line x1="21" y1="3" x2="14" y2="10"/></svg>`;
 
 const upgradeSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="16 12 12 8 8 12"/><line x1="12" y1="16" x2="12" y2="8"/></svg>`;
 
@@ -248,6 +250,8 @@ export class Panel {
   private _savedContent: ChildNode[] | null = null;
   private _collapsed = false;
   private _collapseBtn: HTMLButtonElement | null = null;
+  private _expandOverlay: HTMLElement | null = null;
+  private _expandKeyHandler: ((e: KeyboardEvent) => void) | null = null;
 
   constructor(options: PanelOptions) {
     this.panelId = options.id;
@@ -300,10 +304,6 @@ export class Panel {
       headerLeft.appendChild(this.newBadgeEl);
     }
 
-    if (options.premium && !getSecretState('WORLDMONITOR_API_KEY').present) {
-      const proBadge = h('span', { className: 'panel-pro-badge' }, t('premium.pro'));
-      headerLeft.appendChild(proBadge);
-    }
 
     this.header.appendChild(headerLeft);
 
@@ -322,6 +322,8 @@ export class Panel {
     if (options.collapsible) {
       this.appendCollapseButton();
     }
+
+    this.appendExpandButton();
 
     if (options.closable !== false) {
       this.appendCloseButton();
@@ -754,6 +756,115 @@ export class Panel {
       }));
     });
     this.header.appendChild(closeBtn);
+  }
+
+  private appendExpandButton(): void {
+    const btn = h('button', {
+      className: 'icon-btn panel-expand-btn',
+      'aria-label': 'Expand panel',
+      title: 'Expand panel',
+    }) as HTMLButtonElement;
+    btn.innerHTML = PANEL_EXPAND_SVG;
+
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this._expandOverlay) {
+        this._closeExpandOverlay();
+        return;
+      }
+      this._openExpandOverlay(btn);
+    });
+
+    this.header.insertBefore(btn, this.header.querySelector('.panel-close-btn'));
+  }
+
+  private _openExpandOverlay(btn: HTMLButtonElement): void {
+    const overlay = document.createElement('div');
+    overlay.className = 'panel-expand-overlay';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    overlay.setAttribute('aria-label', 'Expanded panel view');
+
+    const inner = document.createElement('div');
+    inner.className = 'panel-expand-inner';
+
+    // Header bar inside overlay
+    const titleEl = this.header.querySelector('.panel-title');
+    const overlayHeader = document.createElement('div');
+    overlayHeader.className = 'panel-expand-header';
+    overlayHeader.innerHTML = `<span class="panel-expand-title">${titleEl?.textContent ?? ''}</span>`;
+
+    const closeOverlayBtn = h('button', {
+      className: 'icon-btn panel-expand-close-btn',
+      'aria-label': 'Close expanded view',
+      title: 'Close expanded view',
+    }) as HTMLButtonElement;
+    closeOverlayBtn.innerHTML = PANEL_COLLAPSE_SVG;
+    closeOverlayBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._closeExpandOverlay();
+    });
+    overlayHeader.appendChild(closeOverlayBtn);
+
+    // Clone content into overlay
+    const contentClone = document.createElement('div');
+    contentClone.className = 'panel-expand-content';
+    // Mirror live content with a MutationObserver so data updates show in the overlay
+    const syncContent = () => {
+      contentClone.innerHTML = this.content.innerHTML;
+    };
+    syncContent();
+    const observer = new MutationObserver(syncContent);
+    observer.observe(this.content, { childList: true, subtree: true, characterData: true, attributes: true });
+
+    inner.appendChild(overlayHeader);
+    inner.appendChild(contentClone);
+    overlay.appendChild(inner);
+
+    // Click outside inner to close
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) this._closeExpandOverlay();
+    });
+
+    // ESC key to close
+    this._expandKeyHandler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') this._closeExpandOverlay();
+    };
+    document.addEventListener('keydown', this._expandKeyHandler);
+
+    (overlay as any).__observer = observer;
+    this._expandOverlay = overlay;
+    document.body.appendChild(overlay);
+    document.body.classList.add('panel-expanded-active');
+    btn.innerHTML = PANEL_COLLAPSE_SVG;
+    btn.title = 'Close expanded view';
+    btn.setAttribute('aria-label', 'Close expanded view');
+
+    requestAnimationFrame(() => overlay.classList.add('visible'));
+  }
+
+  private _closeExpandOverlay(): void {
+    if (!this._expandOverlay) return;
+    const overlay = this._expandOverlay;
+    (overlay as any).__observer?.disconnect();
+
+    overlay.classList.remove('visible');
+    setTimeout(() => overlay.remove(), 200);
+
+    document.body.classList.remove('panel-expanded-active');
+    this._expandOverlay = null;
+
+    if (this._expandKeyHandler) {
+      document.removeEventListener('keydown', this._expandKeyHandler);
+      this._expandKeyHandler = null;
+    }
+
+    const expandBtn = this.header.querySelector<HTMLButtonElement>('.panel-expand-btn');
+    if (expandBtn) {
+      expandBtn.innerHTML = PANEL_EXPAND_SVG;
+      expandBtn.title = 'Expand panel';
+      expandBtn.setAttribute('aria-label', 'Expand panel');
+    }
   }
 
   public getElement(): HTMLElement {
@@ -1236,5 +1347,6 @@ export class Panel {
     this.element.classList.remove('resizing', 'col-resizing');
     delete this.element.dataset.resizing;
     document.body.classList.remove('panel-resize-active');
+    this._closeExpandOverlay();
   }
 }
