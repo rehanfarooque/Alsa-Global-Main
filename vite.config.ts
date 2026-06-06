@@ -263,6 +263,144 @@ function aaiiBootstrapPlugin(): Plugin {
  * ServerInsights payload when the Redis-cached news:insights:v1 key is absent.
  * Results are cached in-process for 4 minutes to avoid hammering the Gemini API.
  */
+/**
+ * Widget agent plugin — serves /widget-agent (health + generate).
+ * Uses Gemini to generate self-contained HTML widgets streamed as SSE.
+ */
+function widgetAgentPlugin(): Plugin {
+  return {
+    name: 'widget-agent',
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        const url = req.url ?? '';
+        const method = req.method ?? 'GET';
+
+        // Health check
+        if ((url === '/widget-agent/health' || url === '/widget-agent') && method === 'GET') {
+          const apiKey = process.env.GEMINI_API_KEY;
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.statusCode = 200;
+          res.end(JSON.stringify({ ok: true, proKeyConfigured: !!apiKey, provider: 'gemini' }));
+          return;
+        }
+
+        if (url !== '/widget-agent' || method !== 'POST') return next();
+
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey) {
+          res.statusCode = 503;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ error: 'GEMINI_API_KEY not set' }));
+          return;
+        }
+
+        // Parse body
+        let body: { prompt?: string; mode?: string; currentHtml?: string; conversationHistory?: Array<{ role: string; content: string }> } = {};
+        try {
+          const chunks: Buffer[] = [];
+          await new Promise<void>((resolve, reject) => {
+            req.on('data', (c: Buffer) => chunks.push(c));
+            req.on('end', resolve);
+            req.on('error', reject);
+          });
+          body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        } catch { /* use empty body */ }
+
+        const prompt = (body.prompt ?? '').slice(0, 2000).trim();
+        if (!prompt) {
+          res.statusCode = 400;
+          res.end(JSON.stringify({ error: 'No prompt' }));
+          return;
+        }
+
+        // Set up SSE
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('X-Accel-Buffering', 'no');
+
+        const send = (event: Record<string, unknown>) => {
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        };
+
+        send({ type: 'tool_call', endpoint: 'Generating widget with Gemini...' });
+
+        const systemPrompt = `You are an expert frontend developer creating self-contained HTML widgets for a global intelligence dashboard.
+
+Generate a single complete HTML file that:
+1. Uses only inline CSS and vanilla JavaScript (no external imports EXCEPT Chart.js from https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js if charts are needed)
+2. Has a dark theme matching: background #0d1117, text #e6edf3, accent #58a6ff, border #21262d
+3. Uses a clean, professional design with subtle gradients/shadows
+4. Shows realistic, plausible data values relevant to the widget type
+5. Is interactive (hover effects, tooltips, clickable tabs if relevant)
+6. Fits naturally in a dashboard panel (no <html><head><body> wrapper needed — just the content div with embedded <style> and <script>)
+7. Has a title bar matching the dark theme
+
+CRITICAL: Return ONLY the raw HTML. No markdown, no code fences, no explanation. Start directly with the HTML content.`;
+
+        const history = (body.conversationHistory ?? []).map(m => ({
+          role: m.role === 'assistant' ? 'model' : 'user',
+          parts: [{ text: m.content }],
+        }));
+
+        const modifyContext = body.currentHtml
+          ? `\n\nCurrent widget HTML to modify:\n${body.currentHtml.slice(0, 8000)}`
+          : '';
+
+        const geminiPayload = {
+          system_instruction: { parts: [{ text: systemPrompt }] },
+          contents: [
+            ...history,
+            { role: 'user', parts: [{ text: `${prompt}${modifyContext}` }] },
+          ],
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 8192,
+          },
+        };
+
+        const model = process.env.GEMINI_MODEL ?? 'gemini-2.0-flash';
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+
+        try {
+          const geminiResp = await fetch(geminiUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(geminiPayload),
+            signal: AbortSignal.timeout(90_000),
+          });
+
+          if (!geminiResp.ok) {
+            const errText = await geminiResp.text().catch(() => '');
+            throw new Error(`Gemini HTTP ${geminiResp.status}: ${errText.slice(0, 200)}`);
+          }
+
+          const geminiData = await geminiResp.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+          let html = geminiData.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+
+          // Strip markdown code fences if model wrapped it
+          html = html.replace(/^```html?\s*/i, '').replace(/\s*```$/, '').trim();
+
+          if (!html) throw new Error('Gemini returned empty content');
+
+          // Extract title from HTML or use prompt
+          const titleMatch = html.match(/<title[^>]*>([^<]+)<\/title>/i) || html.match(/<h[12][^>]*>([^<]+)<\/h[12]>/i);
+          const title = titleMatch ? titleMatch[1]!.trim().slice(0, 60) : prompt.slice(0, 60);
+
+          send({ type: 'html_complete', html });
+          send({ type: 'done', title });
+        } catch (err) {
+          send({ type: 'error', message: (err as Error).message });
+        }
+
+        res.end();
+      });
+    },
+  };
+}
+
 function onDemandInsightsPlugin(): Plugin {
   let lastGenAt = 0;
   let inFlight: Promise<unknown> | null = null;
@@ -929,6 +1067,7 @@ export default defineConfig(({ mode }) => {
       },
       htmlVariantPlugin(activeMeta, activeVariant, isDesktopBuild),
       aaiiBootstrapPlugin(),
+      widgetAgentPlugin(),
       onDemandInsightsPlugin(),
       polymarketPlugin(),
       rssProxyPlugin(),

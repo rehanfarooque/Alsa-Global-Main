@@ -12,7 +12,8 @@ export { parseStringArray } from '../../../_shared/parse-string-array';
 // Constants
 // ========================================================================
 
-export const UPSTREAM_TIMEOUT_MS = 10_000;
+export const UPSTREAM_TIMEOUT_MS = 8_000;
+const STOOQ_TIMEOUT_MS = 5_000; // Stooq often slow/blocked from VPS — fail fast
 
 export function sanitizeSymbol(raw: string): string {
   return raw.trim().replace(/\s+/g, '').slice(0, 32).toUpperCase();
@@ -62,7 +63,7 @@ export async function fetchStooqQuote(
     const url = `https://stooq.com/q/l/?s=${encodeURIComponent(stooqSym)}&f=sd2t2ohlcv&h&e=csv`;
     const resp = await fetch(url, {
       headers: { 'User-Agent': CHROME_UA, 'Accept': 'text/csv' },
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      signal: AbortSignal.timeout(STOOQ_TIMEOUT_MS),
     });
     if (!resp.ok) {
       console.warn(`[Stooq] ${symbol} HTTP ${resp.status}`);
@@ -142,21 +143,26 @@ async function fetchForexQuote(
 }
 
 /**
- * Unified quote fetcher: forex → Frankfurter; others → Stooq first, Yahoo fallback.
+ * Unified quote fetcher: Yahoo is primary (covers everything).
+ *  - Yahoo first (cached, cookie-authed, with 429 backoff)
+ *  - forex (=X) → Frankfurter fallback if Yahoo fails
+ *  - others → Stooq fallback if Yahoo fails
  */
 export async function fetchQuote(
   symbol: string,
 ): Promise<{ price: number; change: number; sparkline: number[] } | null> {
-  // Forex pairs: use Frankfurter (ECB rates, reliable, no rate limit)
+  // Yahoo first — primary source for everything
+  const yahoo = await fetchYahooQuote(symbol);
+  if (yahoo) return yahoo;
+
+  // Forex fallback: Frankfurter (ECB rates)
   if (/=X$/i.test(symbol)) {
     const fx = await fetchForexQuote(symbol);
     if (fx) return fx;
-    // Fall through to Stooq if Frankfurter fails
   }
-  const stooq = await fetchStooqQuote(symbol);
-  if (stooq) return stooq;
-  const yahoo = await fetchYahooQuote(symbol);
-  return yahoo;
+
+  // Stooq as last resort
+  return fetchStooqQuote(symbol);
 }
 
 export async function fetchYahooQuotesBatch(
@@ -417,50 +423,134 @@ function parseYahooChartResponse(data: YahooChartResponse): { price: number; cha
   return { price, change, sparkline };
 }
 
+// ─── Yahoo browser fingerprint ─────────────────────────────────────────────
+// Yahoo's 429 trigger is largely fingerprint-based. Sending headers that mimic
+// a real Chrome browser dramatically reduces rate-limit hits from VPS IPs.
+const YAHOO_HEADERS: Record<string, string> = {
+  'User-Agent': CHROME_UA,
+  'Accept': 'application/json, text/plain, */*',
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Accept-Encoding': 'gzip, deflate, br',
+  'Origin': 'https://finance.yahoo.com',
+  'Referer': 'https://finance.yahoo.com/',
+  'Sec-Fetch-Dest': 'empty',
+  'Sec-Fetch-Mode': 'cors',
+  'Sec-Fetch-Site': 'same-site',
+};
+
+// ─── Yahoo cookie + crumb session ──────────────────────────────────────────
+// Yahoo requires a session cookie (A1/A3/B) for many endpoints. We fetch it
+// from fc.yahoo.com once and reuse. Cookie + crumb refreshed every 60 min.
+let yahooCookie: string | null = null;
+let yahooCookieAt = 0;
+const YAHOO_COOKIE_TTL_MS = 60 * 60 * 1000;
+
+async function ensureYahooCookie(): Promise<string | null> {
+  const now = Date.now();
+  if (yahooCookie && now - yahooCookieAt < YAHOO_COOKIE_TTL_MS) return yahooCookie;
+  try {
+    const resp = await fetch('https://fc.yahoo.com/', {
+      headers: { 'User-Agent': CHROME_UA, Accept: 'text/html' },
+      signal: AbortSignal.timeout(6_000),
+      redirect: 'manual',
+    });
+    const setCookies = (resp.headers as unknown as { getSetCookie?: () => string[] }).getSetCookie?.()
+      ?? (resp.headers.get('set-cookie') ? [resp.headers.get('set-cookie')!] : []);
+    if (setCookies.length > 0) {
+      yahooCookie = setCookies.map(c => c.split(';')[0]).join('; ');
+      yahooCookieAt = now;
+      return yahooCookie;
+    }
+  } catch {
+    // ignore — cookie is optional optimization
+  }
+  return null;
+}
+
+// ─── Yahoo quote cache ──────────────────────────────────────────────────────
+// Most panels poll quotes every 30-60s; cache reduces upstream load 10x and
+// effectively eliminates 429s during normal use.
+const _yahooCache = new Map<string, { result: { price: number; change: number; sparkline: number[] } | null; ts: number }>();
+const YAHOO_CACHE_TTL_MS = 90 * 1000;       // 90s for successful quotes
+const YAHOO_NEG_TTL_MS = 30 * 1000;         // 30s for failures — retry sooner
+let yahoo429BackoffUntil = 0;
+const YAHOO_429_BACKOFF_MS = 60_000;        // After a 429, skip Yahoo for 60s
+
 export async function fetchYahooQuote(
   symbol: string,
 ): Promise<{ price: number; change: number; sparkline: number[] } | null> {
-  // Try direct Yahoo first
-  try {
-    await yahooGate();
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}`;
-    const resp = await fetch(url, {
-      headers: { 'User-Agent': CHROME_UA },
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-    });
-    if (resp.ok) {
-      const data: YahooChartResponse = await resp.json();
-      const parsed = parseYahooChartResponse(data);
-      if (parsed) return parsed;
-    } else {
-      console.warn(`[Yahoo] ${symbol} direct HTTP ${resp.status}`);
-    }
-  } catch (err) {
-    console.warn(`[Yahoo] ${symbol} direct error:`, (err as Error).message);
+  const now = Date.now();
+  const hit = _yahooCache.get(symbol);
+  if (hit) {
+    const ttl = hit.result !== null ? YAHOO_CACHE_TTL_MS : YAHOO_NEG_TTL_MS;
+    if (now - hit.ts < ttl) return hit.result;
   }
 
-  // Fallback: Railway relay (different IP, not rate-limited by Yahoo)
-  const relayBase = getRelayBaseUrl();
-  if (!relayBase) {
-    console.warn(`[Yahoo] ${symbol} relay skipped: WS_RELAY_URL not set`);
-    return null;
+  // Global 429 backoff: don't hammer Yahoo for 60s after rate-limit
+  if (now < yahoo429BackoffUntil) {
+    return hit?.result ?? null;
   }
-  try {
-    const relayUrl = `${relayBase}/yahoo-chart?symbol=${encodeURIComponent(symbol)}`;
-    const resp = await fetch(relayUrl, {
-      headers: getRelayHeaders(),
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-    });
-    if (!resp.ok) {
-      console.warn(`[Yahoo] ${symbol} relay HTTP ${resp.status}: ${await resp.text().catch(() => '')}`);
-      return null;
+
+  await yahooGate();
+  const cookie = await ensureYahooCookie();
+  const headers: Record<string, string> = { ...YAHOO_HEADERS };
+  if (cookie) headers['Cookie'] = cookie;
+
+  // Try query2 first (often less rate-limited than query1), then query1
+  const hosts = ['query2.finance.yahoo.com', 'query1.finance.yahoo.com'];
+  for (const host of hosts) {
+    try {
+      const url = `https://${host}/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`;
+      const resp = await fetch(url, {
+        headers,
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      });
+      if (resp.status === 429) {
+        yahoo429BackoffUntil = Date.now() + YAHOO_429_BACKOFF_MS;
+        console.warn(`[Yahoo] ${symbol} 429 on ${host} — backing off 60s`);
+        // Invalidate cookie — Yahoo sometimes ties 429 to stale session
+        yahooCookie = null;
+        continue;
+      }
+      if (!resp.ok) {
+        console.warn(`[Yahoo] ${symbol} ${host} HTTP ${resp.status}`);
+        continue;
+      }
+      const data: YahooChartResponse = await resp.json();
+      const parsed = parseYahooChartResponse(data);
+      if (parsed) {
+        _yahooCache.set(symbol, { result: parsed, ts: Date.now() });
+        return parsed;
+      }
+    } catch (err) {
+      console.warn(`[Yahoo] ${symbol} ${host} error:`, (err as Error).message);
     }
-    const data: YahooChartResponse = await resp.json();
-    return parseYahooChartResponse(data);
-  } catch (err) {
-    console.warn(`[Yahoo] ${symbol} relay error:`, (err as Error).message);
-    return null;
   }
+
+  // Last resort: relay (only if WS_RELAY_URL set)
+  const relayBase = getRelayBaseUrl();
+  if (relayBase) {
+    try {
+      const relayUrl = `${relayBase}/yahoo-chart?symbol=${encodeURIComponent(symbol)}`;
+      const resp = await fetch(relayUrl, {
+        headers: getRelayHeaders(),
+        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      });
+      if (resp.ok) {
+        const data: YahooChartResponse = await resp.json();
+        const parsed = parseYahooChartResponse(data);
+        if (parsed) {
+          _yahooCache.set(symbol, { result: parsed, ts: Date.now() });
+          return parsed;
+        }
+      }
+    } catch (err) {
+      console.warn(`[Yahoo] ${symbol} relay error:`, (err as Error).message);
+    }
+  }
+
+  _yahooCache.set(symbol, { result: null, ts: Date.now() });
+  return null;
 }
 
 // ========================================================================

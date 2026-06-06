@@ -1,9 +1,8 @@
 /**
- * AlsaGlobal: ListMarketQuotes — Yahoo Finance direct.
+ * AlsaGlobal: ListMarketQuotes — Yahoo Finance primary, Finnhub backup.
  *
- * Original codebase reads from a Redis bootstrap cache populated by an
- * external Railway cron. AlsaGlobal self-hosts: hit Yahoo Finance directly.
- * Yahoo covers stocks, ETFs, indices, futures, and crypto in one API.
+ * Yahoo is the canonical source (free, covers stocks/indices/futures/forex/crypto).
+ * Finnhub is only used when Yahoo returns 429/null AND key is configured.
  */
 
 import type {
@@ -12,15 +11,17 @@ import type {
   ListMarketQuotesResponse,
   MarketQuote,
 } from '../../../../src/generated/server/alsaglobal/market/v1/service_server';
-import { parseStringArray, fetchQuote } from './_shared';
+import { parseStringArray, fetchQuote, fetchFinnhubQuote, YAHOO_ONLY_SYMBOLS } from './_shared';
 
-// Default basket: top 20 US stocks by market cap. Caller can override
-// via `symbols`. Use Yahoo symbols (^GSPC for indices, GC=F for futures).
 const DEFAULT_SYMBOLS = [
   'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA',
   'JPM', 'V', 'WMT', 'XOM', 'UNH', 'JNJ', 'PG', 'HD',
   'BAC', 'KO', 'DIS', 'NFLX', 'BA',
 ];
+
+function isUsStock(sym: string): boolean {
+  return /^[A-Z.]{1,5}$/.test(sym) && !YAHOO_ONLY_SYMBOLS.has(sym);
+}
 
 export async function listMarketQuotes(
   _ctx: ServerContext,
@@ -29,10 +30,20 @@ export async function listMarketQuotes(
   const parsedSymbols = parseStringArray(req.symbols);
   const symbolsToFetch = parsedSymbols.length > 0 ? parsedSymbols : DEFAULT_SYMBOLS;
 
+  const finnhubKey = process.env.FINNHUB_API_KEY;
+
   const results = await Promise.allSettled(
     symbolsToFetch.map(async (sym) => {
-      const q = await fetchQuote(sym);
-      return q ? { sym, ...q } : null;
+      // Yahoo is primary (covers everything)
+      const yq = await fetchQuote(sym);
+      if (yq) return { sym, ...yq };
+
+      // Finnhub backup for US stocks only
+      if (finnhubKey && isUsStock(sym)) {
+        const fh = await fetchFinnhubQuote(sym, finnhubKey);
+        if (fh) return { sym, price: fh.price, change: fh.changePercent, sparkline: [] as number[] };
+      }
+      return null;
     }),
   );
 
@@ -50,8 +61,8 @@ export async function listMarketQuotes(
 
   return {
     quotes,
-    finnhubSkipped: true,
-    skipReason: 'AlsaGlobal uses Yahoo Finance instead',
+    finnhubSkipped: false,
+    skipReason: '',
     rateLimited: false,
   };
 }
