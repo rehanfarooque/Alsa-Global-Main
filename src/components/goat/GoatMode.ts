@@ -99,14 +99,15 @@ class GoatOverlay {
     this.buildShell();
     this.setStatus('connecting', 'Connecting...');
 
-    // Pre-flight: confirm the proxy is alive before we open mic/audio contexts.
-    // If GEMINI_API_KEY is missing server-side, the WS upgrade returns 503,
-    // which surfaces as a generic "Closed: 1006" without this probe.
+    // Pre-flight: confirm the proxy is alive and learn which provider is wired up
+    // (gemini | openai). Surface 503 / 404 as readable reasons instead of letting
+    // the user hit a generic 1006 close after mic/audio contexts are open.
     const reachable = await this.probeProxy();
     if (!reachable.ok) {
       this.setStatus('error', reachable.reason);
       return;
     }
+    const provider = reachable.provider;
 
     try {
       const [avatarMod, voiceMod, lipsyncMod, agentMod, transMod, waveMod] = await Promise.all([
@@ -131,6 +132,7 @@ class GoatOverlay {
       this.session = await voiceMod.createVoiceSession({
         name: getGoatName(),
         voice: getGoatVoice(),
+        provider,
         tools: tools.schema,
         onState: (s) => this.setStatus(s, this.statusLabel(s)),
         onUserTranscript: (text, opts) => this.transcription?.append('user', text, { interim: opts?.isInterim }),
@@ -420,25 +422,29 @@ class GoatOverlay {
   }
 
   /**
-   * Confirm GEMINI_API_KEY is available from the dev proxy before opening the
-   * mic. 503 = key not set; 404 = plugin not registered (restart dev server).
-   * Any other status with a JSON `key` field counts as ready.
+   * Confirm an API key is wired up server-side before opening the mic. The
+   * proxy also tells us which realtime provider it's using so the client can
+   * speak the right wire protocol. 503 = key missing; 404 = plugin not
+   * registered (restart dev server).
    */
-  private async probeProxy(): Promise<{ ok: true } | { ok: false; reason: string }> {
+  private async probeProxy(): Promise<
+    { ok: true; provider: 'gemini' | 'openai' } | { ok: false; reason: string }
+  > {
     try {
       const res = await fetch('/api/goat/key', { method: 'GET' });
       if (res.status === 404) {
         return { ok: false, reason: 'Proxy not registered. Restart dev server (Ctrl+C, then npm run dev).' };
       }
       if (res.status === 503) {
-        return { ok: false, reason: 'GEMINI_API_KEY not set. Add it to .env and restart dev server.' };
+        return { ok: false, reason: 'Realtime API key not set. Add GEMINI_API_KEY or OPENAI_API_KEY to .env and restart.' };
       }
       if (!res.ok) {
         return { ok: false, reason: `Proxy returned HTTP ${res.status}` };
       }
-      const body = await res.json().catch(() => ({}));
+      const body = await res.json().catch(() => ({})) as { key?: string; provider?: 'gemini' | 'openai' };
       if (!body.key) return { ok: false, reason: 'Proxy returned no key' };
-      return { ok: true };
+      const provider = body.provider === 'openai' ? 'openai' : 'gemini';
+      return { ok: true, provider };
     } catch (err) {
       return { ok: false, reason: `Server unreachable: ${(err as Error).message}` };
     }

@@ -1,41 +1,34 @@
 /**
- * VoiceSession — Gemini Live WebSocket bridge for ARGUS.
+ * VoiceSession — provider-agnostic realtime voice bridge for ARGUS.
  *
- *  - Captures mic PCM (16 kHz mono) via Web Audio
- *  - Streams base64 PCM to the dev proxy at /api/goat/live, which fans out
- *    to wss://generativelanguage.googleapis.com (BidiGenerateContent)
- *  - Receives 24 kHz PCM audio and plays it via WebAudio so we can tap
- *    AnalyserNodes for the waveform bar + lip-sync
- *  - Handles inbound `toolCall` frames, dispatches to the caller's handler,
- *    sends `toolResponse` back to the model
+ *  - Captures mic PCM via Web Audio at the provider's required sample rate
+ *  - Streams base64 PCM through /api/goat/live (proxy fans out to upstream)
+ *  - Receives PCM audio and plays it via WebAudio so we can tap AnalyserNodes
+ *  - Handles tool calls and routes them through the caller's dispatcher
  *
- * The Live API model and voice are the only knobs you tune for latency vs.
- * quality. Both are constants at the top — change here only.
+ * The actual wire protocol is delegated to a VoiceProvider:
+ *   - GeminiProvider   — Google Gemini Live API
+ *   - OpenAIRealtimeProvider — OpenAI Realtime API
+ *
+ * The server picks the provider via LLM_REALTIME_PROVIDER env var and tells
+ * the client which one to use via /api/goat/key.
  */
 
 import type { ToolDefinition } from './AgentTools';
+import { GeminiProvider } from './providers/gemini';
+import { OpenAIRealtimeProvider } from './providers/openai';
+import type { ProviderName, VoiceProvider } from './providers/types';
 
-// ─── Tuning knobs — change here only ─────────────────────────────────────────
-// Confirmed working against the GEMINI_API_KEY in .env on 2026-06-07:
-//   gemini-3.1-flash-live-preview          — 442ms handshake, fastest
-//   gemini-2.5-flash-native-audio-latest   — 580ms, stable channel
-const LIVE_MODEL = 'gemini-3.1-flash-live-preview';
-
-// 2048 samples @ 16 kHz = 128 ms of audio per upload chunk. Smaller = lower
-// latency, more network frames. 1024 also works on modern Chrome.
 const MIC_BUFFER_SIZE = 2048;
-const MIC_SAMPLE_RATE = 16000;
-const AI_SAMPLE_RATE = 24000;
-// ──────────────────────────────────────────────────────────────────────────────
 
 export type VoiceState = 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error' | 'closed';
 
 export interface VoiceSessionOptions {
   name: string;
   voice: string;
+  provider: ProviderName;
   tools: ToolDefinition[];
   onState: (state: VoiceState, info?: string) => void;
-  /** `isInterim` = caption is mid-utterance (Web Speech API live). Replace prior interim line, do not coalesce. */
   onUserTranscript: (text: string, opts?: { isInterim?: boolean }) => void;
   onModelTranscript: (text: string) => void;
   onToolCall: (name: string, args: Record<string, unknown>) => Promise<unknown>;
@@ -47,12 +40,22 @@ export interface VoiceSessionHandle {
   close(): void;
   setMuted(muted: boolean): void;
   isMuted(): boolean;
-  /** Send a text turn (typed message) to Gemini. Triggers a normal voice response. */
   sendText(text: string): void;
 }
 
+function createProvider(name: ProviderName): VoiceProvider {
+  switch (name) {
+    case 'openai': return new OpenAIRealtimeProvider();
+    case 'gemini': return new GeminiProvider();
+    default: return new GeminiProvider();
+  }
+}
+
 export async function createVoiceSession(options: VoiceSessionOptions): Promise<VoiceSessionHandle> {
-  console.log(`[VoiceSession] Initializing Live API (model=${LIVE_MODEL})`);
+  const provider = createProvider(options.provider);
+  const MIC_SAMPLE_RATE = provider.micSampleRate;
+  const AI_SAMPLE_RATE = provider.playbackSampleRate;
+  console.log(`[VoiceSession] provider=${options.provider} mic=${MIC_SAMPLE_RATE}Hz playback=${AI_SAMPLE_RATE}Hz`);
 
   // ── 1. Mic capture ─────────────────────────────────────────────────────────
   const stream = await navigator.mediaDevices.getUserMedia({
@@ -76,25 +79,18 @@ export async function createVoiceSession(options: VoiceSessionOptions): Promise<
   micSource.connect(userAnalyser);
   options.onUserAudioNode?.(userAnalyser);
 
-  // ScriptProcessor is deprecated but universal. AudioWorklet would be the
-  // modern option; it needs a separate file shipped to the worker.
   // eslint-disable-next-line @typescript-eslint/no-deprecated
   const processor = (micCtx as unknown as {
     createScriptProcessor: (size: number, ins: number, outs: number) => ScriptProcessorNode;
   }).createScriptProcessor(MIC_BUFFER_SIZE, 1, 1);
   micSource.connect(processor);
 
-  // Some browsers won't fire onaudioprocess unless the node is connected to
-  // destination. Route through a silent gain so the user doesn't echo.
   const muteGain = micCtx.createGain();
   muteGain.gain.value = 0;
   processor.connect(muteGain);
   muteGain.connect(micCtx.destination);
 
-  // ── 2a. Web Speech API live captions (started early so they show even
-  //         while the WebSocket is still connecting / erroring). Browser STT
-  //         is independent of getUserMedia — Chrome ships its own internal
-  //         capture for SpeechRecognition.
+  // ── 2a. Web Speech API live captions (early start) ─────────────────────────
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
   let recognition: { stop(): void; abort(): void; start?(): void } | null = null;
@@ -132,10 +128,8 @@ export async function createVoiceSession(options: VoiceSessionOptions): Promise<
       recognition = rec;
       console.log('[VoiceSession] Web Speech API live captions running (early)');
     } catch (err) {
-      console.warn('[VoiceSession] Web Speech setup failed, falling back to Gemini ASR:', (err as Error).message);
+      console.warn('[VoiceSession] Web Speech setup failed:', (err as Error).message);
     }
-  } else {
-    console.log('[VoiceSession] Web Speech API unavailable — using Gemini server-side transcription');
   }
 
   // ── 2b. AI playback ─────────────────────────────────────────────────────────
@@ -162,7 +156,7 @@ export async function createVoiceSession(options: VoiceSessionOptions): Promise<
   let currentState: VoiceState = 'connecting';
   let audioChunksReceived = 0;
   let audioChunksSent = 0;
-  const webSpeechActive = webSpeechActiveEarly; // True while a SpeechRecognition session is running
+  const webSpeechActive = webSpeechActiveEarly;
 
   const setState = (s: VoiceState, info?: string) => {
     if (closed) return;
@@ -174,45 +168,35 @@ export async function createVoiceSession(options: VoiceSessionOptions): Promise<
   };
   setState('connecting');
 
-  // Watchdog: if setupComplete doesn't arrive within 12s after WS open,
-  // surface a clear error rather than letting the status pill hang on CONNECTING.
+  const sendFrames = (frames: string[]) => {
+    for (const f of frames) {
+      try { ws.send(f); } catch (err) {
+        console.warn('[VoiceSession] send failed:', (err as Error).message);
+      }
+    }
+  };
+
   let setupWatchdog: ReturnType<typeof setTimeout> | null = null;
   ws.addEventListener('open', () => {
     setupWatchdog = setTimeout(() => {
       if (!setupAcked && !closed) {
-        console.warn('[VoiceSession] setupComplete not received within 12s');
-        setState('error', 'No setupComplete from Gemini. Check dev server console for upstream errors.');
+        console.warn('[VoiceSession] setup ack not received within 12s');
+        setState('error', `No setup ack from ${options.provider}. Check server logs.`);
       }
     }, 12_000);
     console.log('[VoiceSession] WebSocket open — sending setup');
-    const setupMsg = {
-      setup: {
-        model: `models/${LIVE_MODEL}`,
-        generationConfig: {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: options.voice },
-            },
-          },
-        },
-        systemInstruction: { parts: [{ text: buildSystemPrompt(options.name) }] },
-        tools: options.tools.length > 0 ? [{ functionDeclarations: options.tools }] : undefined,
-        // Have the server transcribe both sides so we can render text alongside audio
-        inputAudioTranscription: {},
-        outputAudioTranscription: {},
-      },
-    };
-    try {
-      ws.send(JSON.stringify(setupMsg));
-    } catch (err) {
-      console.error('[VoiceSession] Failed to send setup:', err);
-      setState('error', 'Setup send failed');
-    }
+    const setupMsg = provider.buildSetupMessage({
+      name: options.provider,
+      voice: options.voice,
+      agentName: options.name,
+      systemPrompt: buildSystemPrompt(options.name),
+      tools: options.tools,
+    });
+    sendFrames([setupMsg]);
   });
 
   ws.addEventListener('error', () => {
-    setState('error', 'WebSocket error — check dev server console');
+    setState('error', 'WebSocket error — check server logs');
   });
 
   ws.addEventListener('close', (e) => {
@@ -241,8 +225,6 @@ export async function createVoiceSession(options: VoiceSessionOptions): Promise<
     lastSpeakingAt = performance.now();
     setState('speaking');
     src.onended = () => {
-      // Return to listening only after a brief silence to avoid flicker
-      // between consecutive audio frames within the same utterance.
       setTimeout(() => {
         if (!closed && performance.now() - lastSpeakingAt > 250) {
           setState('listening');
@@ -251,80 +233,64 @@ export async function createVoiceSession(options: VoiceSessionOptions): Promise<
     };
   };
 
-  // ── 5. Inbound message dispatch ────────────────────────────────────────────
+  // ── 5. Inbound message dispatch (provider-parsed) ──────────────────────────
   ws.addEventListener('message', async (evt) => {
-    try {
-      const text = typeof evt.data === 'string'
-        ? evt.data
-        : new TextDecoder().decode(evt.data as ArrayBuffer);
-      const msg = JSON.parse(text);
+    const text = typeof evt.data === 'string'
+      ? evt.data
+      : new TextDecoder().decode(evt.data as ArrayBuffer);
 
-      // Diagnostic messages from the dev proxy itself (not from Gemini).
-      // The plugin sends these when it can't reach upstream so we can show
-      // a real reason instead of letting the client hang on CONNECTING.
-      if (msg._proxyError) {
-        const pe = msg._proxyError as { reason: string; message: string; code?: number };
-        console.warn(`[VoiceSession] proxy error: ${pe.reason} — ${pe.message}`);
-        setState('error', pe.message || pe.reason);
-        return;
-      }
+    const events = provider.parseInbound(text);
+    const toolResponses: Array<{ id: string; name: string; result: unknown }> = [];
 
-      if (msg.setupComplete) {
-        setupAcked = true;
-        if (setupWatchdog) { clearTimeout(setupWatchdog); setupWatchdog = null; }
-        console.log('[VoiceSession] setupComplete — Gemini ready');
-        setState('listening', 'Ready');
-        return;
-      }
+    for (const ev of events) {
+      switch (ev.kind) {
+        case 'ready':
+          setupAcked = true;
+          if (setupWatchdog) { clearTimeout(setupWatchdog); setupWatchdog = null; }
+          console.log(`[VoiceSession] ready — ${options.provider} live`);
+          setState('listening', 'Ready');
+          break;
 
-      if (msg.serverContent) {
-        const sc = msg.serverContent;
-        const parts = sc.modelTurn?.parts ?? [];
-        for (const part of parts) {
-          if (part.inlineData?.mimeType?.startsWith('audio/pcm')) {
-            audioChunksReceived++;
-            const b64 = part.inlineData.data as string;
-            const bytes = base64ToBytes(b64);
-            const pcm = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(bytes.byteLength / 2));
-            playPcmChunk(pcm);
+        case 'error':
+          console.warn(`[VoiceSession] provider error: ${ev.message}`);
+          setState('error', ev.message);
+          break;
+
+        case 'audio':
+          audioChunksReceived++;
+          playPcmChunk(ev.pcm);
+          break;
+
+        case 'user_transcript':
+          if (!webSpeechActive) {
+            options.onUserTranscript(ev.text, { isInterim: ev.isInterim });
           }
-          if (part.text) options.onModelTranscript(part.text);
-        }
-        // Gemini's server-side ASR is the FALLBACK for user transcripts when
-        // Web Speech API isn't available (Safari, locked-down Chromium, etc.).
-        // When Web Speech is running, it has already committed the line, so
-        // these arrive as no-ops on the same content.
-        if (sc.inputTranscription?.text && !webSpeechActive) {
-          options.onUserTranscript(sc.inputTranscription.text);
-        }
-        if (sc.outputTranscription?.text) options.onModelTranscript(sc.outputTranscription.text);
-        return;
-      }
+          break;
 
-      if (msg.toolCall) {
-        setState('thinking', 'Calling tool');
-        const calls = msg.toolCall.functionCalls ?? [];
-        console.log(`[VoiceSession] tool call: ${calls.map((c: { name: string }) => c.name).join(', ')}`);
-        const responses: Array<{ id: string; name: string; response: { result: unknown } }> = [];
-        for (const call of calls) {
+        case 'model_transcript':
+          options.onModelTranscript(ev.text);
+          break;
+
+        case 'tool_call': {
+          setState('thinking', `Calling ${ev.name}`);
+          console.log(`[VoiceSession] tool call: ${ev.name}`);
           try {
-            const result = await options.onToolCall(call.name, call.args ?? {});
-            responses.push({ id: call.id, name: call.name, response: { result } });
+            const result = await options.onToolCall(ev.name, ev.args);
+            toolResponses.push({ id: ev.id, name: ev.name, result });
           } catch (err) {
-            responses.push({
-              id: call.id,
-              name: call.name,
-              response: { result: { error: (err as Error).message } },
+            toolResponses.push({
+              id: ev.id,
+              name: ev.name,
+              result: { error: (err as Error).message },
             });
           }
+          break;
         }
-        ws.send(JSON.stringify({ toolResponse: { functionResponses: responses } }));
-        return;
       }
+    }
 
-      console.log('[VoiceSession] unhandled message keys:', Object.keys(msg));
-    } catch (err) {
-      console.warn('[VoiceSession] message parse error:', (err as Error).message);
+    if (toolResponses.length > 0) {
+      sendFrames(provider.encodeToolResponses(toolResponses));
     }
   });
 
@@ -337,17 +303,8 @@ export async function createVoiceSession(options: VoiceSessionOptions): Promise<
       const s = Math.max(-1, Math.min(1, input[i]!));
       pcm16[i] = s < 0 ? s * 32768 : s * 32767;
     }
-    const b64 = bytesToBase64(new Uint8Array(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength));
-    // Gemini Live deprecated `realtimeInput.mediaChunks` in favor of typed
-    // top-level fields (audio | video | text). Using the new shape — the old
-    // one closes the upstream with code 1007.
-    const payload = {
-      realtimeInput: {
-        audio: { mimeType: 'audio/pcm;rate=16000', data: b64 },
-      },
-    };
     try {
-      ws.send(JSON.stringify(payload));
+      ws.send(provider.encodeMicChunk(pcm16));
       audioChunksSent++;
       if (audioChunksSent % 50 === 0) {
         console.log(`[VoiceSession] mic chunks sent: ${audioChunksSent}, audio received: ${audioChunksReceived}`);
@@ -377,7 +334,6 @@ export async function createVoiceSession(options: VoiceSessionOptions): Promise<
     setMuted(m) {
       muted = m;
       console.log(`[VoiceSession] muted=${m}`);
-      // Stop captions while muted so we don't show captions for room noise
       if (m) { try { recognition?.stop(); } catch { /* ignore */ } }
       else if (recognition && !closed) { try { (recognition as { start?: () => void }).start?.(); } catch { /* ignore */ } }
     },
@@ -386,19 +342,8 @@ export async function createVoiceSession(options: VoiceSessionOptions): Promise<
       if (closed || !setupAcked || ws.readyState !== WebSocket.OPEN) return;
       const trimmed = text.trim();
       if (!trimmed) return;
-      // Surface the user's typed text in the transcript so they see it in context
       options.onUserTranscript(trimmed);
-      // Gemini Live accepts text turns via clientContent. turnComplete tells the
-      // model the user is done, prompting a response.
-      const payload = {
-        clientContent: {
-          turns: [{ role: 'user', parts: [{ text: trimmed }] }],
-          turnComplete: true,
-        },
-      };
-      try { ws.send(JSON.stringify(payload)); } catch (err) {
-        console.warn('[VoiceSession] text send failed:', (err as Error).message);
-      }
+      sendFrames(provider.encodeTextTurn(trimmed));
     },
   };
 }
@@ -476,27 +421,11 @@ function wsCloseReason(code: number, reason: string): string {
   switch (code) {
     case 1000: return 'Closed normally';
     case 1001: return 'Server going away';
-    case 1006: return 'Connection lost before handshake — check GEMINI_API_KEY and Live API access';
+    case 1006: return 'Connection lost before handshake — check API key and provider availability';
     case 1007: return 'Bad data sent to upstream';
     case 1008: return 'Policy violation — likely wrong model name';
-    case 1011: return 'Upstream Gemini Live closed the connection — model or quota issue';
+    case 1011: return 'Upstream closed the connection — model, quota, or region issue';
     case 1015: return 'TLS handshake failed';
     default:   return `Disconnected (code ${code})`;
   }
-}
-
-function base64ToBytes(b64: string): Uint8Array {
-  const bin = atob(b64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-  return bytes;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let s = '';
-  const CHUNK = 0x8000;
-  for (let i = 0; i < bytes.length; i += CHUNK) {
-    s += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + CHUNK)));
-  }
-  return btoa(s);
 }

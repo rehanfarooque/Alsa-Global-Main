@@ -270,46 +270,75 @@ function aaiiBootstrapPlugin(): Plugin {
  * to Google's Gemini Live API (bidirectional audio + tool calling). Keeps
  * GEMINI_API_KEY server-side so it never appears in client JS.
  */
+/**
+ * Resolve which realtime provider to use based on env vars.
+ * Honors explicit LLM_REALTIME_PROVIDER first, then falls back to whichever
+ * key is set. Returns null if neither key is configured.
+ */
+function resolveRealtimeProvider(): { provider: 'gemini' | 'openai'; apiKey: string } | null {
+  const forced = (process.env.LLM_REALTIME_PROVIDER || '').toLowerCase();
+  const geminiKey = process.env.GEMINI_API_KEY || '';
+  const openaiKey = process.env.OPENAI_API_KEY || '';
+
+  if (forced === 'openai' && openaiKey) return { provider: 'openai', apiKey: openaiKey };
+  if (forced === 'gemini' && geminiKey) return { provider: 'gemini', apiKey: geminiKey };
+  // No forced provider — prefer OpenAI if its key is set (wider regional availability),
+  // otherwise Gemini.
+  if (openaiKey) return { provider: 'openai', apiKey: openaiKey };
+  if (geminiKey) return { provider: 'gemini', apiKey: geminiKey };
+  return null;
+}
+
+const OPENAI_REALTIME_MODEL = process.env.OPENAI_REALTIME_MODEL
+  || 'gpt-4o-realtime-preview-2024-12-17';
+
 function goatLivePlugin(): Plugin {
   return {
     name: 'goat-live',
     configureServer(server) {
-      // ─── /api/goat/key — surface key presence + value to local client ─────
-      // VoiceSession (generateContent mode) needs the key in the browser to
-      // call the REST API directly. Dev-only; in prod, route through a real
-      // server-side proxy.
+      // ─── /api/goat/key — surface key + provider name to client ────────────
+      // Browser learns which wire protocol to speak (Gemini Live vs OpenAI
+      // Realtime). The `key` field stays in the response for the legacy
+      // generateContent path, but the realtime WebSocket auth happens
+      // server-side so the browser doesn't see the upstream key.
       server.middlewares.use((req, res, next) => {
         if (req.url !== '/api/goat/key') return next();
-        const apiKey = process.env.GEMINI_API_KEY || '';
         res.setHeader('Content-Type', 'application/json');
-        if (!apiKey) {
+        const resolved = resolveRealtimeProvider();
+        if (!resolved) {
           res.statusCode = 503;
-          res.end(JSON.stringify({ error: 'GEMINI_API_KEY not set on the server' }));
+          res.end(JSON.stringify({
+            error: 'No realtime API key set. Add GEMINI_API_KEY or OPENAI_API_KEY to .env.',
+          }));
           return;
         }
         res.statusCode = 200;
-        res.end(JSON.stringify({ key: apiKey }));
+        res.end(JSON.stringify({
+          provider: resolved.provider,
+          // `key` kept for backwards-compat with older clients that probe presence.
+          // The real upstream auth happens server-side inside the WS proxy.
+          key: resolved.apiKey,
+        }));
       });
 
       const httpServer = server.httpServer;
       if (!httpServer) return;
 
-      // Lazy import ws so we don't pay the cost at config-eval time
       let WebSocketServer: typeof import('ws').WebSocketServer | null = null;
       let WS: typeof import('ws').WebSocket | null = null;
 
       httpServer.on('upgrade', async (req, socket, head) => {
         if (!req.url?.startsWith('/api/goat/live')) return;
 
-        console.log('[goat-live] WebSocket upgrade request');
-
-        const apiKey = process.env.GEMINI_API_KEY;
-        if (!apiKey) {
-          console.error('[goat-live] GEMINI_API_KEY not set');
-          socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\nGEMINI_API_KEY not set');
+        const resolved = resolveRealtimeProvider();
+        if (!resolved) {
+          console.error('[goat-live] No realtime provider key set');
+          socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\nGEMINI_API_KEY or OPENAI_API_KEY required');
           socket.destroy();
           return;
         }
+        const { provider, apiKey } = resolved;
+        console.log(`[goat-live] WebSocket upgrade — provider=${provider}`);
 
         if (!WebSocketServer) {
           const wsModule = await import('ws');
@@ -317,14 +346,31 @@ function goatLivePlugin(): Plugin {
           WS = wsModule.WebSocket;
         }
 
+        const upstreamUrl = provider === 'openai'
+          ? `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(OPENAI_REALTIME_MODEL)}`
+          : `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${apiKey}`;
+        const upstreamHeaders = provider === 'openai'
+          ? { Authorization: `Bearer ${apiKey}`, 'OpenAI-Beta': 'realtime=v1' }
+          : undefined;
+
+        // Some VPS providers' IPv6 ranges are flagged by Google's geo-IP
+        // (and others') as "unsupported region" even when the IPv4 address
+        // sits in a supported country. FORCE_IPV4_UPSTREAM=1 in .env makes
+        // the upstream socket resolve A records only, so the request goes
+        // out over the (correctly-geolocated) IPv4 address.
+        const forceIpv4 = process.env.FORCE_IPV4_UPSTREAM === '1'
+          || process.env.FORCE_IPV4_UPSTREAM === 'true';
+
         const wss = new WebSocketServer!({ noServer: true });
         wss.handleUpgrade(req, socket as import('net').Socket, head, (clientWs) => {
-          console.log('[goat-live] Client connected, opening upstream to Gemini');
-          const upstreamUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${apiKey}`;
+          console.log(`[goat-live] Client connected, opening upstream to ${provider}${forceIpv4 ? ' (IPv4 forced)' : ''}`);
           const upstreamConnectStartedAt = Date.now();
           const upstreamWs = new WS!(upstreamUrl, {
-            // Bump the per-frame header buffer so consent/auth headers don't overflow
+            headers: upstreamHeaders,
             maxPayload: 64 * 1024 * 1024,
+            // ws forwards these to the underlying tls/net socket; family=4
+            // restricts DNS to A records (IPv4 only).
+            ...(forceIpv4 ? { family: 4 } : {}),
           });
 
           const pendingFromClient: Array<Buffer | string> = [];
@@ -346,7 +392,7 @@ function goatLivePlugin(): Plugin {
               clientWs.send(JSON.stringify({
                 _proxyError: {
                   reason: 'upstream-connect-timeout',
-                  message: `Could not reach Gemini Live within ${elapsed}ms. Check network/firewall/HTTPS_PROXY.`,
+                  message: `Could not reach ${provider} realtime within ${elapsed}ms. Check network/firewall/HTTPS_PROXY.`,
                   elapsedMs: elapsed,
                 },
               }));
@@ -365,7 +411,7 @@ function goatLivePlugin(): Plugin {
 
           upstreamWs.on('open', () => {
             const elapsed = Date.now() - upstreamConnectStartedAt;
-            console.log(`[goat-live] Upstream Gemini WS open (${elapsed}ms)`);
+            console.log(`[goat-live] Upstream ${provider} WS open (${elapsed}ms)`);
             clearTimeout(upstreamOpenTimeout);
             upstreamOpen = true;
             for (const msg of pendingFromClient) {
