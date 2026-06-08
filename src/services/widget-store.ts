@@ -212,6 +212,13 @@ export function isProWidgetEnabled(): boolean {
 }
 
 export function isProUser(): boolean {
+  // Self-host escape hatch: set VITE_FORCE_PRO=1 in .env to unlock all Pro
+  // features (Widget Builder, unlimited panels, premium data) without
+  // needing Clerk/Convex/Dodo wired up. Intended for self-hosted instances
+  // where the operator has already paid for upstream services themselves.
+  if (import.meta.env.VITE_FORCE_PRO === '1' || import.meta.env.VITE_FORCE_PRO === 'true') {
+    return true;
+  }
   return (
     isWidgetFeatureEnabled() ||
     isProWidgetEnabled() ||
