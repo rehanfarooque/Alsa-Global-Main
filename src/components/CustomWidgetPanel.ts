@@ -35,15 +35,7 @@ export class CustomWidgetPanel extends Panel {
       }));
     });
 
-    if (this.spec.tier === 'pro') {
-      const badge = h('span', { className: 'widget-pro-badge' }, t('widgets.proBadge'));
-      if (closeBtn) {
-        this.header.insertBefore(badge, closeBtn);
-      } else {
-        this.header.appendChild(badge);
-      }
-    }
-
+    // AlsaGlobal self-host: no PRO gating — badge removed.
     if (closeBtn) {
       this.header.insertBefore(chatBtn, closeBtn);
     } else {

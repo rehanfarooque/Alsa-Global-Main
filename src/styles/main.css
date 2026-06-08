@@ -811,6 +811,1035 @@ canvas,
   color: var(--accent);
 }
 
+/* ============================================================
+   GOAT mode — Jarvis-style voice AI assistant (ARGUS)
+   ============================================================ */
+
+.goat-mode-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  margin-right: 8px;
+  background: linear-gradient(135deg, #00d4ff 0%, #ff00aa 100%);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  color: #fff;
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  overflow: hidden;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  box-shadow: 0 0 0 0 rgba(0, 212, 255, 0);
+}
+
+.goat-mode-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 30%, rgba(255,255,255,0.35) 50%, transparent 70%);
+  transform: translateX(-100%);
+  animation: goat-shimmer 3s ease-in-out infinite;
+}
+
+@keyframes goat-shimmer {
+  0%, 100% { transform: translateX(-100%); }
+  50% { transform: translateX(100%); }
+}
+
+.goat-mode-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 0 18px 0 rgba(0, 212, 255, 0.45), 0 0 32px 0 rgba(255, 0, 170, 0.25);
+}
+
+.goat-mode-btn.active {
+  background: linear-gradient(135deg, #ff00aa 0%, #00d4ff 100%);
+  box-shadow: 0 0 18px 0 rgba(255, 0, 170, 0.55);
+}
+
+.goat-mode-icon {
+  font-size: 13px;
+  line-height: 1;
+  display: inline-block;
+  animation: goat-rotate 6s linear infinite;
+}
+
+@keyframes goat-rotate {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.goat-mode-label {
+  position: relative;
+  z-index: 1;
+}
+
+/* ---------- Overlay shell ---------- */
+
+.goat-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.22s ease;
+}
+
+.goat-overlay.visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* ─── Chat-window mode ─────────────────────────────────────────────────────
+   Docks ARGUS as a 420 px sliding panel on the right edge. The dashboard
+   underneath stays interactive. Voice keeps running. Avatar shrinks to a
+   compact header strip. */
+.goat-overlay.chat-mode {
+  pointer-events: none;
+}
+.goat-overlay.chat-mode .goat-overlay-bg { opacity: 0; pointer-events: none; }
+.goat-overlay.chat-mode .goat-overlay-shell {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  top: auto;
+  left: auto;
+  width: clamp(340px, 28vw, 400px);
+  height: min(620px, calc(100vh - 40px));
+  padding: 10px 12px 12px;
+  background: rgba(8, 12, 22, 0.88);
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  border-radius: 18px;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.65);
+  grid-template-rows: auto 1fr auto auto;
+  gap: 8px;
+  pointer-events: auto;
+}
+.goat-overlay.chat-mode .goat-overlay-topbar {
+  padding: 6px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  border-bottom: 1px solid rgba(0, 212, 255, 0.12);
+}
+.goat-overlay.chat-mode .goat-overlay-name { font-size: 16px; letter-spacing: 0.18em; }
+.goat-overlay.chat-mode .goat-overlay-tag { display: none; }
+.goat-overlay.chat-mode .goat-overlay-controls .goat-exit-btn span { display: none; }
+.goat-overlay.chat-mode .goat-overlay-controls .goat-exit-btn { padding: 6px; }
+.goat-overlay.chat-mode .goat-overlay-status { font-size: 9px; padding: 4px 10px; }
+
+.goat-overlay.chat-mode .goat-overlay-main {
+  grid-template-columns: 1fr;
+}
+.goat-overlay.chat-mode .goat-avatar-stage { padding: 4px 0; }
+.goat-overlay.chat-mode .argus-avatar {
+  width: 116px !important;
+  height: 116px !important;
+}
+.goat-overlay.chat-mode .goat-waveform-bar {
+  padding: 6px 12px;
+  gap: 10px;
+}
+.goat-overlay.chat-mode .goat-waveform-user,
+.goat-overlay.chat-mode .goat-waveform-ai {
+  width: 130px;
+  height: 18px;
+  background: transparent;
+}
+.goat-overlay.chat-mode .goat-ticker { display: none; }
+.goat-overlay.chat-mode .goat-suggest {
+  padding: 0 4px;
+  gap: 6px;
+  max-width: 100%;
+}
+.goat-overlay.chat-mode .goat-suggest-chip { font-size: 11px; padding: 6px 10px; }
+.goat-overlay.chat-mode .goat-transcription {
+  max-height: 100%;
+  width: 100%;
+  font-size: 13px;
+  padding: 10px 14px;
+  overflow-y: auto;
+}
+.goat-overlay.chat-mode .goat-input-bar { padding: 8px 10px; }
+.goat-overlay.chat-mode .goat-input-mic,
+.goat-overlay.chat-mode .goat-input-send {
+  width: 36px;
+  height: 36px;
+}
+.goat-overlay.chat-mode .goat-input-field { font-size: 13px; padding: 8px 12px; }
+
+/* ─── Minimized-to-corner mode ────────────────────────────────────────────
+   Shrinks the entire overlay to a small floating bubble in the bottom-right.
+   Voice keeps running, the ARGUS avatar still pulses + lip-syncs. Click the
+   bubble to restore the full overlay. */
+.goat-overlay.minimized {
+  pointer-events: none;
+}
+.goat-overlay.minimized .goat-overlay-bg { opacity: 0; pointer-events: none; }
+.goat-overlay.minimized .goat-overlay-shell {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  top: auto;
+  left: auto;
+  width: 132px;
+  height: 132px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  gap: 0;
+  display: block;
+  pointer-events: auto;
+  cursor: pointer;
+  filter: drop-shadow(0 20px 50px rgba(0, 0, 0, 0.7));
+  transition: transform 0.3s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.goat-overlay.minimized .goat-overlay-shell:hover { transform: scale(1.04); }
+.goat-overlay.minimized .goat-overlay-topbar,
+.goat-overlay.minimized .goat-overlay-status,
+.goat-overlay.minimized .goat-waveform-bar,
+.goat-overlay.minimized .goat-ticker,
+.goat-overlay.minimized .goat-transcription-wrap,
+.goat-overlay.minimized .goat-input-bar { display: none !important; }
+.goat-overlay.minimized .goat-overlay-main,
+.goat-overlay.minimized .goat-stage-col {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.goat-overlay.minimized .goat-avatar-stage {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.goat-overlay.minimized .argus-avatar {
+  width: 100% !important;
+  height: 100% !important;
+}
+.goat-overlay.minimized .goat-avatar-canvas {
+  width: 100%;
+  height: 100%;
+}
+.goat-overlay.minimized .goat-avatar-glow { display: none; }
+/* Subtle hint badge so the user knows they can tap to expand */
+.goat-overlay.minimized .goat-overlay-shell::after {
+  content: 'Tap to expand';
+  position: absolute;
+  top: -28px;
+  right: 0;
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: rgba(0, 212, 255, 0.9);
+  background: rgba(8, 12, 22, 0.9);
+  border: 1px solid rgba(0, 212, 255, 0.4);
+  border-radius: 999px;
+  padding: 4px 10px;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+.goat-overlay.minimized .goat-overlay-shell:hover::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.goat-overlay-bg {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse 55% 70% at 50% 45%, rgba(0, 212, 255, 0.10) 0%, transparent 60%),
+    radial-gradient(ellipse 40% 50% at 15% 85%, rgba(255, 138, 59, 0.06) 0%, transparent 60%),
+    radial-gradient(ellipse 40% 60% at 85% 80%, rgba(0, 212, 255, 0.05) 0%, transparent 60%),
+    #050810;
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+/* Subtle starfield — pure CSS, no asset. Repeated radial-gradient dots. */
+.goat-overlay-bg::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    radial-gradient(1px 1px at 12% 18%, rgba(255,255,255,0.55), transparent 50%),
+    radial-gradient(1px 1px at 78% 32%, rgba(255,255,255,0.45), transparent 50%),
+    radial-gradient(1px 1px at 33% 78%, rgba(255,255,255,0.5), transparent 50%),
+    radial-gradient(1.4px 1.4px at 88% 64%, rgba(255,255,255,0.4), transparent 50%),
+    radial-gradient(1px 1px at 56% 12%, rgba(255,255,255,0.35), transparent 50%),
+    radial-gradient(1px 1px at 22% 52%, rgba(255,255,255,0.45), transparent 50%),
+    radial-gradient(1.5px 1.5px at 70% 88%, rgba(255,255,255,0.5), transparent 50%),
+    radial-gradient(1px 1px at 44% 38%, rgba(255,255,255,0.3), transparent 50%);
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.goat-overlay-shell {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  padding: 18px 28px 18px;
+  gap: 12px;
+}
+
+/* Main area. Solo mode is single-column — ArgusPanels float over it now. */
+.goat-overlay-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(280px, 28vw, 380px);
+  gap: 22px;
+  min-height: 0;
+}
+.goat-overlay-main--solo {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.goat-stage-col {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  gap: 14px;
+  min-height: 0;
+}
+
+.goat-intel-col {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: linear-gradient(180deg, rgba(8, 12, 22, 0.65) 0%, rgba(0, 30, 40, 0.55) 100%);
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  border-radius: 14px;
+  padding: 0;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  min-height: 0;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+
+/* Window-chrome title bar — modeled on the AlsaTalk Campaigns panel */
+.goat-intel-chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: rgba(0, 212, 255, 0.06);
+  border-bottom: 1px solid rgba(0, 212, 255, 0.18);
+}
+.goat-intel-chrome-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: rgba(255, 138, 59, 0.92);
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  font-weight: 600;
+}
+.goat-intel-chrome-title svg { color: rgba(255, 138, 59, 0.92); }
+.goat-intel-chrome-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.goat-intel-chrome-dot {
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: #58e6c8;
+  box-shadow: 0 0 8px #58e6c8;
+  margin-right: 4px;
+  animation: goat-pulse 2.4s ease-in-out infinite;
+}
+.goat-intel-chrome-btn {
+  width: 22px; height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  color: rgba(255, 255, 255, 0.6);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.goat-intel-chrome-btn:hover {
+  color: #fff;
+  border-color: rgba(0, 212, 255, 0.5);
+  background: rgba(0, 212, 255, 0.08);
+}
+
+/* "CAMPAIGNS" / "MISSION CONTROL" style banner */
+.goat-intel-banner {
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.goat-intel-headline {
+  display: block;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: 0.28em;
+  color: #fff;
+  text-shadow: 0 0 12px rgba(0, 212, 255, 0.35);
+}
+.goat-intel-subtitle {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.32em;
+  color: rgba(255, 138, 59, 0.85);
+  margin-top: 4px;
+}
+
+.goat-intel-list {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+.goat-intel-list::-webkit-scrollbar { width: 6px; }
+.goat-intel-list::-webkit-scrollbar-track { background: transparent; }
+.goat-intel-list::-webkit-scrollbar-thumb {
+  background: rgba(0, 212, 255, 0.2);
+  border-radius: 3px;
+}
+
+.goat-intel-empty {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  padding: 24px 8px;
+  text-align: center;
+}
+
+.goat-intel-item {
+  padding: 10px 12px;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: border-color 0.25s ease, background 0.25s ease;
+}
+
+.goat-intel-item.pending {
+  border-color: rgba(255, 204, 0, 0.35);
+  background: rgba(255, 204, 0, 0.04);
+}
+.goat-intel-item.pending .goat-intel-tool::after {
+  content: '·';
+  margin-left: 6px;
+  color: rgba(255, 204, 0, 0.7);
+  animation: goat-pulse 1.2s ease-in-out infinite;
+}
+.goat-intel-item.done {
+  border-color: rgba(0, 212, 255, 0.32);
+}
+
+.goat-intel-tool {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #00d4ff;
+  font-weight: 600;
+}
+
+.goat-intel-args {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.7);
+  word-break: break-word;
+}
+
+.goat-intel-result {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.95);
+  font-variant-numeric: tabular-nums;
+}
+.goat-intel-result:empty { display: none; }
+
+@media (max-width: 880px) {
+  .goat-overlay-main { grid-template-columns: 1fr; }
+  .goat-intel-col { max-height: 30vh; }
+}
+
+/* ─── Suggestion chips (quick prompts shown until first interaction) ──────── */
+.goat-suggest {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  padding: 4px 12px 0;
+  max-width: 760px;
+  margin: 0 auto;
+  transition: opacity 0.3s ease, transform 0.3s ease, max-height 0.4s ease;
+  max-height: 200px;
+}
+.goat-suggest.hidden {
+  opacity: 0;
+  transform: translateY(-6px);
+  pointer-events: none;
+  max-height: 0;
+  padding: 0;
+  margin: 0;
+  overflow: hidden;
+}
+.goat-suggest-chip {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.85);
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  padding: 8px 14px;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.goat-suggest-chip:hover {
+  border-color: rgba(0, 212, 255, 0.55);
+  background: rgba(0, 212, 255, 0.10);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+/* Avatar interrupt cue — brief pulse on click so the user knows the tap registered */
+.goat-avatar-stage.--interrupted {
+  animation: goat-interrupt-pulse 0.5s ease-out;
+}
+@keyframes goat-interrupt-pulse {
+  0%   { filter: brightness(1); }
+  40%  { filter: brightness(1.45); }
+  100% { filter: brightness(1); }
+}
+
+/* ─── Bottom input bar (mic toggle + text input + send) ───────────────────── */
+.goat-input-bar {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 14px;
+  background: rgba(8, 12, 22, 0.7);
+  border: 1px solid rgba(0, 212, 255, 0.18);
+  border-radius: 14px;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+}
+.goat-input-mic,
+.goat-input-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  cursor: pointer;
+  transition: all 0.18s ease;
+}
+.goat-input-mic:hover,
+.goat-input-send:hover {
+  border-color: rgba(0, 212, 255, 0.55);
+  background: rgba(0, 212, 255, 0.10);
+}
+.goat-input-mic .ico-off { display: none; }
+.goat-input-mic.muted {
+  background: rgba(255, 107, 138, 0.16);
+  border-color: rgba(255, 107, 138, 0.5);
+  color: #ff8aa3;
+}
+.goat-input-mic.muted .ico-on  { display: none; }
+.goat-input-mic.muted .ico-off { display: inline-block; }
+.goat-input-send {
+  background: rgba(0, 212, 255, 0.18);
+  border-color: rgba(0, 212, 255, 0.5);
+  color: #00d4ff;
+}
+.goat-input-send:hover { background: rgba(0, 212, 255, 0.28); color: #fff; }
+
+.goat-input-field {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 10px 14px;
+  color: #fff;
+  font-family: inherit;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+.goat-input-field::placeholder { color: rgba(255, 255, 255, 0.32); }
+.goat-input-field:focus {
+  border-color: rgba(0, 212, 255, 0.55);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+/* ─── Live-update animation for moving prices in ArgusPanel ──────────────── */
+@keyframes argus-flash-up   { 0%, 100% { background: transparent; } 30% { background: rgba(88, 230, 200, 0.18); } }
+@keyframes argus-flash-down { 0%, 100% { background: transparent; } 30% { background: rgba(255, 107, 138, 0.16); } }
+.argus-popout-stat.--flash-up   { animation: argus-flash-up   0.9s ease-out; }
+.argus-popout-stat.--flash-down { animation: argus-flash-down 0.9s ease-out; }
+.argus-popout-spark {
+  width: 100%;
+  height: 56px;
+  margin-top: 10px;
+}
+.argus-popout-spark path { fill: none; stroke-width: 1.8; }
+.argus-popout-spark path.spark-line.--up   { stroke: #58e6c8; }
+.argus-popout-spark path.spark-line.--down { stroke: #ff6b8a; }
+.argus-popout-spark path.spark-area.--up   { fill: rgba(88, 230, 200, 0.12); stroke: none; }
+.argus-popout-spark path.spark-area.--down { fill: rgba(255, 107, 138, 0.10); stroke: none; }
+.argus-popout-live-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  background: rgba(88, 230, 200, 0.16);
+  color: #58e6c8;
+  border: 1px solid rgba(88, 230, 200, 0.4);
+}
+.argus-popout-live-pill::before {
+  content: '';
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: #58e6c8;
+  box-shadow: 0 0 6px #58e6c8;
+  animation: goat-pulse 1.4s ease-in-out infinite;
+}
+
+/* ---------- Top bar ---------- */
+
+.goat-overlay-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 18px;
+  background: rgba(8, 12, 22, 0.55);
+  border: 1px solid rgba(0, 212, 255, 0.12);
+  border-radius: 14px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
+.goat-overlay-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-family: inherit;
+}
+
+.goat-overlay-pulse {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #00d4ff;
+  box-shadow: 0 0 12px 2px rgba(0, 212, 255, 0.7);
+  animation: goat-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes goat-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.4); opacity: 0.7; }
+}
+
+.goat-overlay-name {
+  font-size: 20px;
+  font-weight: 800;
+  letter-spacing: 0.22em;
+  color: #fff;
+  text-shadow: 0 0 14px rgba(0, 212, 255, 0.45);
+}
+
+.goat-overlay-tag {
+  font-size: 10px;
+  letter-spacing: 0.28em;
+  color: rgba(255, 138, 59, 0.78);
+  padding-left: 10px;
+  margin-left: 2px;
+  border-left: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.goat-overlay-status {
+  font-size: 8px !important;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.72);
+  padding: 4px 10px !important;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.02);
+  position: relative;
+  line-height: 1;
+}
+.goat-overlay-status::before {
+  content: '';
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 6px currentColor;
+  margin-right: 7px;
+  vertical-align: 1px;
+  animation: goat-pulse 1.6s ease-in-out infinite;
+}
+
+.goat-overlay-status[data-state="listening"] {
+  color: #00d4ff;
+  border-color: rgba(0, 212, 255, 0.45);
+  background: rgba(0, 212, 255, 0.08);
+}
+
+.goat-overlay-status[data-state="speaking"] {
+  color: #ff00aa;
+  border-color: rgba(255, 0, 170, 0.45);
+  background: rgba(255, 0, 170, 0.08);
+}
+
+.goat-overlay-status[data-state="thinking"] {
+  color: #ffcc00;
+  border-color: rgba(255, 204, 0, 0.45);
+  background: rgba(255, 204, 0, 0.08);
+}
+
+.goat-overlay-status[data-state="error"] {
+  color: #ff5577;
+  border-color: rgba(255, 85, 119, 0.45);
+  background: rgba(255, 85, 119, 0.08);
+}
+
+.goat-overlay-controls {
+  display: inline-flex;
+  gap: 8px;
+}
+
+.goat-mic-btn,
+.goat-exit-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  color: #fff;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.goat-mic-btn:hover,
+.goat-exit-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.goat-mic-btn.muted {
+  background: rgba(255, 85, 119, 0.18);
+  border-color: rgba(255, 85, 119, 0.5);
+  color: #ff8899;
+}
+
+/* ---------- Waveform bar ---------- */
+
+/* Hidden: the audio waveform is now drawn AROUND the avatar ring (each tick
+   waves individually with voice amplitude), not as a separate bar below. */
+.goat-waveform-bar { display: none !important; }
+
+.goat-waveform-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.goat-waveform-label {
+  font-size: 9px;
+  letter-spacing: 0.22em;
+  color: rgba(255, 255, 255, 0.4);
+}
+
+.goat-waveform-label-ai {
+  color: rgba(0, 212, 255, 0.7);
+}
+
+/* ─── Live market ticker tape ───────────────────────────────────────────── */
+.goat-ticker {
+  position: relative;
+  overflow: hidden;
+  background: rgba(8, 12, 22, 0.6);
+  border: 1px solid rgba(0, 212, 255, 0.18);
+  border-radius: 10px;
+  height: 36px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent);
+}
+.goat-ticker-track {
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+  gap: 28px;
+  padding-left: 16px;
+  white-space: nowrap;
+  animation: goat-ticker-marquee 90s linear infinite;
+  will-change: transform;
+}
+.goat-ticker:hover .goat-ticker-track { animation-play-state: paused; }
+@keyframes goat-ticker-marquee {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+.goat-ticker-loading {
+  color: rgba(255, 255, 255, 0.4);
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  padding: 0 18px;
+}
+.goat-ticker-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
+}
+.goat-ticker-sym  { color: rgba(255, 255, 255, 0.95); font-weight: 600; }
+.goat-ticker-px   { color: #fff; }
+.goat-ticker-chg  { font-size: 11px; }
+.goat-ticker-item.up   .goat-ticker-chg { color: #58e6c8; }
+.goat-ticker-item.down .goat-ticker-chg { color: #ff6b8a; }
+
+.goat-waveform-user,
+.goat-waveform-ai {
+  width: 220px;
+  height: 22px;
+  border-radius: 4px;
+  background: transparent;
+}
+
+.goat-waveform-divider {
+  width: 1px;
+  height: 32px;
+  background: rgba(255, 255, 255, 0.12);
+}
+
+/* ---------- Avatar stage ---------- */
+
+.goat-avatar-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  min-height: 0;
+  cursor: pointer;
+}
+
+.goat-avatar-canvas {
+  width: min(560px, 100%);
+  height: min(560px, 60vh);
+  max-width: 100%;
+  display: block;
+}
+
+.goat-avatar-glow {
+  position: absolute;
+  inset: 50% 50% auto auto;
+  width: 540px;
+  height: 540px;
+  transform: translate(50%, -50%);
+  background: radial-gradient(circle at center, rgba(0, 212, 255, 0.18) 0%, transparent 60%);
+  pointer-events: none;
+  animation: goat-glow-breath 4s ease-in-out infinite;
+  z-index: -1;
+}
+
+@keyframes goat-glow-breath {
+  0%, 100% { opacity: 0.6; transform: translate(50%, -50%) scale(1); }
+  50%      { opacity: 1.0; transform: translate(50%, -50%) scale(1.1); }
+}
+
+/* ---------- Transcription ---------- */
+
+.goat-transcription-wrap {
+  display: flex;
+  justify-content: center;
+}
+
+.goat-transcription {
+  width: min(1100px, 100%);
+  max-height: 110px;
+  overflow: hidden;
+  padding: 14px 22px;
+  background: rgba(8, 12, 22, 0.6);
+  border: 1px solid rgba(0, 212, 255, 0.16);
+  border-radius: 14px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  font-size: 14px;
+  line-height: 1.65;
+  color: rgba(255, 255, 255, 0.9);
+  transition: opacity 0.3s ease;
+}
+/* Hide the transcript shell while it has no children — keeps the layout
+   tight before either side has actually said anything */
+.goat-transcription:empty {
+  opacity: 0;
+  pointer-events: none;
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  margin-top: -4px;
+  border-color: transparent;
+  background: transparent;
+}
+
+.goat-trans-line {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  opacity: 1;
+  transition: opacity 0.5s ease;
+  padding: 6px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.04);
+  margin-bottom: 4px;
+}
+.goat-trans-line:last-child { margin-bottom: 0; }
+
+.goat-trans-line.fading {
+  opacity: 0.3;
+}
+
+.goat-trans-line.interim .goat-trans-text {
+  color: rgba(255, 255, 255, 0.55);
+  font-style: italic;
+}
+.goat-trans-line.interim .goat-trans-text::after {
+  content: '▎';
+  color: var(--asst-accent, #00d4ff);
+  margin-left: 2px;
+  animation: goat-caret 0.9s steps(2) infinite;
+}
+@keyframes goat-caret { 50% { opacity: 0; } }
+
+.goat-trans-who {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.goat-trans-who-user {
+  background: rgba(255, 138, 59, 0.16);
+  color: rgba(255, 138, 59, 0.95);
+  border: 1px solid rgba(255, 138, 59, 0.3);
+}
+
+.goat-trans-who-argus {
+  background: rgba(0, 212, 255, 0.18);
+  color: #00d4ff;
+  border: 1px solid rgba(0, 212, 255, 0.3);
+}
+
+.goat-trans-text {
+  flex: 1;
+  word-wrap: break-word;
+}
+
+/* ---------- Panel highlight when ARGUS opens one ---------- */
+
+@keyframes goat-flash {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(0, 212, 255, 0); }
+  50% { box-shadow: 0 0 0 4px rgba(0, 212, 255, 0.7), 0 0 24px 6px rgba(0, 212, 255, 0.4); }
+}
+
+.panel.goat-flash,
+.goat-flash {
+  animation: goat-flash 1.6s ease-out;
+  position: relative;
+  z-index: 5;
+}
+
+/* Local-mode notifications panel */
+.us-notif-local { display: flex; flex-direction: column; gap: 14px; }
+.us-notif-local-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+}
+.us-notif-local-row.vertical { flex-direction: column; align-items: stretch; }
+.us-notif-local-label { display: flex; flex-direction: column; gap: 2px; }
+.us-notif-local-label strong { font-size: 13px; color: var(--text); }
+.us-notif-local-sub { font-size: 11px; color: var(--text-dim, rgba(255,255,255,0.5)); }
+.us-notif-local-input {
+  width: 100%;
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text);
+  outline: none;
+}
+.us-notif-local-input:focus { border-color: rgba(0, 212, 255, 0.5); }
+.us-notif-local-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+.us-notif-local-save,
+.us-notif-local-test {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  transition: all 0.15s;
+}
+.us-notif-local-save { background: rgba(0, 212, 255, 0.18); border-color: rgba(0, 212, 255, 0.45); color: #00d4ff; font-weight: 600; }
+.us-notif-local-save:hover { background: rgba(0, 212, 255, 0.28); }
+.us-notif-local-test:hover { background: rgba(255, 255, 255, 0.12); }
+.us-notif-local-status[data-kind="ok"] { color: #58e6c8; font-size: 11px; }
+.us-notif-local-status[data-kind="err"] { color: #ff6b8a; font-size: 11px; }
+
+
 .copy-link-btn {
   padding: 4px 10px;
   background: transparent;
@@ -1747,6 +2776,51 @@ body.panel-resize-active iframe {
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 1px;
+}
+
+/* ---- Unavailable / coming-soon variant ---- */
+.add-panel-block.mcp-panel-block-unavailable {
+  opacity: 0.42;
+  cursor: not-allowed;
+  pointer-events: none;
+  filter: grayscale(0.6);
+  border-style: dashed;
+  border-color: var(--border);
+}
+
+.add-panel-block.mcp-panel-block-unavailable:hover {
+  border-color: var(--border);
+  color: var(--text-dim);
+  background: transparent;
+}
+
+.add-panel-block-soon {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 2px 8px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  background: rgba(255, 138, 59, 0.15);
+  border: 1px solid rgba(255, 138, 59, 0.35);
+  color: rgba(255, 138, 59, 0.85);
+  border-radius: 4px;
+}
+
+/* ---- Expanded panel content (full overlay) ---- */
+.panel-content.panel-content-expanded {
+  height: 100% !important;
+  max-height: none !important;
+  flex: 1;
+  overflow: auto;
+}
+
+.panel-content.panel-content-expanded > iframe,
+.panel-content.panel-content-expanded > canvas {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 60vh;
 }
 
 .panel-data-badge {

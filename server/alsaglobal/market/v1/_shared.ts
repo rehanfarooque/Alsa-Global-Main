@@ -2,6 +2,7 @@
  * Shared helpers, types, and constants for the market service handler RPCs.
  */
 import { CHROME_UA, finnhubGate, yahooGate } from '../../../_shared/constants';
+import { fetchYahooJson } from '../../../_shared/yahoo-session';
 import { getRelayBaseUrl, getRelayHeaders } from '../../../_shared/relay';
 export { getRelayBaseUrl, getRelayHeaders };
 import cryptoConfig from '../../../../shared/crypto.json';
@@ -47,6 +48,16 @@ const _stooqCache = new Map<string, { result: { price: number; change: number; s
 const STOOQ_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes for successful quotes
 const STOOQ_NEG_TTL_MS = 20 * 1000; // 20s for failed/N/D — retry quickly after transient rate-limit
 
+// Stooq is a Polish data provider — it carries US stocks/futures, a handful of
+// Western indices, crypto, and forex. It does NOT carry symbols from these
+// exchanges, and lookups for them hang the TCP connection until the 5s
+// timeout fires. Bail before the network call to avoid the spam and the wait.
+const STOOQ_UNSUPPORTED_SUFFIX = /\.(ns|bo|hk|ss|sz|sr|ta|ca|is|ks|kq|tw|two|jk|ps|jo|bk|me|t|si)$/i;
+
+function isStooqUnsupportedSymbol(rawSym: string): boolean {
+  return STOOQ_UNSUPPORTED_SUFFIX.test(rawSym);
+}
+
 export async function fetchStooqQuote(
   symbol: string,
 ): Promise<{ price: number; change: number; sparkline: number[] } | null> {
@@ -59,6 +70,10 @@ export async function fetchStooqQuote(
     if (now - hit.ts < ttl) return hit.result;
   }
 
+  // Structural early-out: Stooq doesn't carry these exchanges, and requests
+  // hang until the 5s timeout. Cheap to re-check via regex on every call.
+  if (isStooqUnsupportedSymbol(symbol)) return null;
+
   try {
     const url = `https://stooq.com/q/l/?s=${encodeURIComponent(stooqSym)}&f=sd2t2ohlcv&h&e=csv`;
     const resp = await fetch(url, {
@@ -66,7 +81,6 @@ export async function fetchStooqQuote(
       signal: AbortSignal.timeout(STOOQ_TIMEOUT_MS),
     });
     if (!resp.ok) {
-      console.warn(`[Stooq] ${symbol} HTTP ${resp.status}`);
       _stooqCache.set(stooqSym, { result: null, ts: now });
       return null;
     }
@@ -76,7 +90,6 @@ export async function fetchStooqQuote(
     // Symbol,Date,Time,Open,High,Low,Close,Volume
     const cols = lines[1]!.split(',');
     if (cols.length < 7 || cols[3] === 'N/D' || cols[6] === 'N/D') {
-      console.warn(`[Stooq] ${symbol} no data (N/D)`);
       _stooqCache.set(stooqSym, { result: null, ts: now });
       return null;
     }
@@ -87,8 +100,9 @@ export async function fetchStooqQuote(
     const result = { price: close, change, sparkline: [] };
     _stooqCache.set(stooqSym, { result, ts: now });
     return result;
-  } catch (err) {
-    console.warn(`[Stooq] ${symbol} error:`, (err as Error).message);
+  } catch {
+    // Timeouts and aborts here are expected for symbols stooq doesn't carry —
+    // cache the null and move on quietly.
     _stooqCache.set(stooqSym, { result: null, ts: now });
     return null;
   }
@@ -423,59 +437,19 @@ function parseYahooChartResponse(data: YahooChartResponse): { price: number; cha
   return { price, change, sparkline };
 }
 
-// ─── Yahoo browser fingerprint ─────────────────────────────────────────────
-// Yahoo's 429 trigger is largely fingerprint-based. Sending headers that mimic
-// a real Chrome browser dramatically reduces rate-limit hits from VPS IPs.
-const YAHOO_HEADERS: Record<string, string> = {
-  'User-Agent': CHROME_UA,
-  'Accept': 'application/json, text/plain, */*',
-  'Accept-Language': 'en-US,en;q=0.9',
-  'Accept-Encoding': 'gzip, deflate, br',
-  'Origin': 'https://finance.yahoo.com',
-  'Referer': 'https://finance.yahoo.com/',
-  'Sec-Fetch-Dest': 'empty',
-  'Sec-Fetch-Mode': 'cors',
-  'Sec-Fetch-Site': 'same-site',
-};
-
-// ─── Yahoo cookie + crumb session ──────────────────────────────────────────
-// Yahoo requires a session cookie (A1/A3/B) for many endpoints. We fetch it
-// from fc.yahoo.com once and reuse. Cookie + crumb refreshed every 60 min.
-let yahooCookie: string | null = null;
-let yahooCookieAt = 0;
-const YAHOO_COOKIE_TTL_MS = 60 * 60 * 1000;
-
-async function ensureYahooCookie(): Promise<string | null> {
-  const now = Date.now();
-  if (yahooCookie && now - yahooCookieAt < YAHOO_COOKIE_TTL_MS) return yahooCookie;
-  try {
-    const resp = await fetch('https://fc.yahoo.com/', {
-      headers: { 'User-Agent': CHROME_UA, Accept: 'text/html' },
-      signal: AbortSignal.timeout(6_000),
-      redirect: 'manual',
-    });
-    const setCookies = (resp.headers as unknown as { getSetCookie?: () => string[] }).getSetCookie?.()
-      ?? (resp.headers.get('set-cookie') ? [resp.headers.get('set-cookie')!] : []);
-    if (setCookies.length > 0) {
-      yahooCookie = setCookies.map(c => c.split(';')[0]).join('; ');
-      yahooCookieAt = now;
-      return yahooCookie;
-    }
-  } catch {
-    // ignore — cookie is optional optimization
-  }
-  return null;
-}
-
 // ─── Yahoo quote cache ──────────────────────────────────────────────────────
 // Most panels poll quotes every 30-60s; cache reduces upstream load 10x and
 // effectively eliminates 429s during normal use.
 const _yahooCache = new Map<string, { result: { price: number; change: number; sparkline: number[] } | null; ts: number }>();
 const YAHOO_CACHE_TTL_MS = 90 * 1000;       // 90s for successful quotes
 const YAHOO_NEG_TTL_MS = 30 * 1000;         // 30s for failures — retry sooner
-let yahoo429BackoffUntil = 0;
-const YAHOO_429_BACKOFF_MS = 60_000;        // After a 429, skip Yahoo for 60s
 
+/**
+ * Fetch a Yahoo Finance quote using the shared session (cookie + crumb).
+ * This is the canonical data path now — Yahoo authenticated this way returns
+ * stocks, crypto, forex, indices, futures, AND international (.NS, .HK, etc.)
+ * from any environment without 429-ing.
+ */
 export async function fetchYahooQuote(
   symbol: string,
 ): Promise<{ price: number; change: number; sparkline: number[] } | null> {
@@ -486,66 +460,41 @@ export async function fetchYahooQuote(
     if (now - hit.ts < ttl) return hit.result;
   }
 
-  // Global 429 backoff: don't hammer Yahoo for 60s after rate-limit
-  if (now < yahoo429BackoffUntil) {
-    return hit?.result ?? null;
-  }
-
   await yahooGate();
-  const cookie = await ensureYahooCookie();
-  const headers: Record<string, string> = { ...YAHOO_HEADERS };
-  if (cookie) headers['Cookie'] = cookie;
 
-  // Try query2 first (often less rate-limited than query1), then query1
-  const hosts = ['query2.finance.yahoo.com', 'query1.finance.yahoo.com'];
-  for (const host of hosts) {
-    try {
-      const url = `https://${host}/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`;
-      const resp = await fetch(url, {
-        headers,
-        signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
-      });
-      if (resp.status === 429) {
-        yahoo429BackoffUntil = Date.now() + YAHOO_429_BACKOFF_MS;
-        console.warn(`[Yahoo] ${symbol} 429 on ${host} — backing off 60s`);
-        // Invalidate cookie — Yahoo sometimes ties 429 to stale session
-        yahooCookie = null;
-        continue;
-      }
-      if (!resp.ok) {
-        console.warn(`[Yahoo] ${symbol} ${host} HTTP ${resp.status}`);
-        continue;
-      }
-      const data: YahooChartResponse = await resp.json();
-      const parsed = parseYahooChartResponse(data);
-      if (parsed) {
-        _yahooCache.set(symbol, { result: parsed, ts: Date.now() });
-        return parsed;
-      }
-    } catch (err) {
-      console.warn(`[Yahoo] ${symbol} ${host} error:`, (err as Error).message);
+  const data = await fetchYahooJson<YahooChartResponse>(
+    `/v8/finance/chart/${encodeURIComponent(symbol)}?interval=1d&range=5d`,
+    { host: 'query2', timeoutMs: UPSTREAM_TIMEOUT_MS },
+  );
+  if (data) {
+    const parsed = parseYahooChartResponse(data);
+    if (parsed) {
+      _yahooCache.set(symbol, { result: parsed, ts: Date.now() });
+      return parsed;
     }
+    console.warn(`[Yahoo] ${symbol}: payload returned but no regularMarketPrice — symbol may be unknown`);
+  } else {
+    console.warn(`[Yahoo] ${symbol}: session/fetch returned null. Restart dev server with NODE_OPTIONS=--max-http-header-size=65536 if you see this on every symbol.`);
   }
 
-  // Last resort: relay (only if WS_RELAY_URL set)
+  // Optional relay fallback (only if WS_RELAY_URL is set in env)
   const relayBase = getRelayBaseUrl();
   if (relayBase) {
     try {
-      const relayUrl = `${relayBase}/yahoo-chart?symbol=${encodeURIComponent(symbol)}`;
-      const resp = await fetch(relayUrl, {
+      const resp = await fetch(`${relayBase}/yahoo-chart?symbol=${encodeURIComponent(symbol)}`, {
         headers: getRelayHeaders(),
         signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
       });
       if (resp.ok) {
-        const data: YahooChartResponse = await resp.json();
-        const parsed = parseYahooChartResponse(data);
+        const relayData: YahooChartResponse = await resp.json();
+        const parsed = parseYahooChartResponse(relayData);
         if (parsed) {
           _yahooCache.set(symbol, { result: parsed, ts: Date.now() });
           return parsed;
         }
       }
-    } catch (err) {
-      console.warn(`[Yahoo] ${symbol} relay error:`, (err as Error).message);
+    } catch {
+      // relay is optional — fall through to null
     }
   }
 

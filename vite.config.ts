@@ -264,6 +264,184 @@ function aaiiBootstrapPlugin(): Plugin {
  * Results are cached in-process for 4 minutes to avoid hammering the Gemini API.
  */
 /**
+ * GOAT mode (ARGUS) Gemini Live proxy plugin.
+ *
+ * Upgrades client WebSocket connections to /api/goat/live and bridges them
+ * to Google's Gemini Live API (bidirectional audio + tool calling). Keeps
+ * GEMINI_API_KEY server-side so it never appears in client JS.
+ */
+function goatLivePlugin(): Plugin {
+  return {
+    name: 'goat-live',
+    configureServer(server) {
+      // ─── /api/goat/key — surface key presence + value to local client ─────
+      // VoiceSession (generateContent mode) needs the key in the browser to
+      // call the REST API directly. Dev-only; in prod, route through a real
+      // server-side proxy.
+      server.middlewares.use((req, res, next) => {
+        if (req.url !== '/api/goat/key') return next();
+        const apiKey = process.env.GEMINI_API_KEY || '';
+        res.setHeader('Content-Type', 'application/json');
+        if (!apiKey) {
+          res.statusCode = 503;
+          res.end(JSON.stringify({ error: 'GEMINI_API_KEY not set on the server' }));
+          return;
+        }
+        res.statusCode = 200;
+        res.end(JSON.stringify({ key: apiKey }));
+      });
+
+      const httpServer = server.httpServer;
+      if (!httpServer) return;
+
+      // Lazy import ws so we don't pay the cost at config-eval time
+      let WebSocketServer: typeof import('ws').WebSocketServer | null = null;
+      let WS: typeof import('ws').WebSocket | null = null;
+
+      httpServer.on('upgrade', async (req, socket, head) => {
+        if (!req.url?.startsWith('/api/goat/live')) return;
+
+        console.log('[goat-live] WebSocket upgrade request');
+
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey) {
+          console.error('[goat-live] GEMINI_API_KEY not set');
+          socket.write('HTTP/1.1 503 Service Unavailable\r\n\r\nGEMINI_API_KEY not set');
+          socket.destroy();
+          return;
+        }
+
+        if (!WebSocketServer) {
+          const wsModule = await import('ws');
+          WebSocketServer = wsModule.WebSocketServer;
+          WS = wsModule.WebSocket;
+        }
+
+        const wss = new WebSocketServer!({ noServer: true });
+        wss.handleUpgrade(req, socket as import('net').Socket, head, (clientWs) => {
+          console.log('[goat-live] Client connected, opening upstream to Gemini');
+          const upstreamUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${apiKey}`;
+          const upstreamConnectStartedAt = Date.now();
+          const upstreamWs = new WS!(upstreamUrl, {
+            // Bump the per-frame header buffer so consent/auth headers don't overflow
+            maxPayload: 64 * 1024 * 1024,
+          });
+
+          const pendingFromClient: Array<Buffer | string> = [];
+          let upstreamOpen = false;
+          let closed = false;
+          let msgFromClient = 0;
+          let msgFromUpstream = 0;
+
+          // ── Upstream-connect watchdog ────────────────────────────────────
+          // If the upstream WS doesn't open within 8s, tell the client what
+          // happened instead of letting them hang on CONNECTING. The client
+          // already has a 12s setup-complete watchdog, but this catches the
+          // "TCP can't even establish" case earlier with a precise reason.
+          const upstreamOpenTimeout = setTimeout(() => {
+            if (upstreamOpen || closed) return;
+            const elapsed = Date.now() - upstreamConnectStartedAt;
+            console.warn(`[goat-live] upstream WS hasn't opened after ${elapsed}ms — network/DNS/TLS issue?`);
+            try {
+              clientWs.send(JSON.stringify({
+                _proxyError: {
+                  reason: 'upstream-connect-timeout',
+                  message: `Could not reach Gemini Live within ${elapsed}ms. Check network/firewall/HTTPS_PROXY.`,
+                  elapsedMs: elapsed,
+                },
+              }));
+            } catch { /* ignore */ }
+            cleanup('upstream-connect-timeout');
+          }, 8_000);
+
+          const cleanup = (reason: string) => {
+            if (closed) return;
+            closed = true;
+            clearTimeout(upstreamOpenTimeout);
+            console.log(`[goat-live] Cleanup: ${reason} (client msgs: ${msgFromClient}, upstream msgs: ${msgFromUpstream})`);
+            try { clientWs.close(1011, reason); } catch { /* ignore */ }
+            try { upstreamWs.close(1011, reason); } catch { /* ignore */ }
+          };
+
+          upstreamWs.on('open', () => {
+            const elapsed = Date.now() - upstreamConnectStartedAt;
+            console.log(`[goat-live] Upstream Gemini WS open (${elapsed}ms)`);
+            clearTimeout(upstreamOpenTimeout);
+            upstreamOpen = true;
+            for (const msg of pendingFromClient) {
+              try { upstreamWs.send(msg); } catch { /* ignore */ }
+            }
+            pendingFromClient.length = 0;
+          });
+
+          upstreamWs.on('message', (data, isBinary) => {
+            msgFromUpstream++;
+            if (msgFromUpstream <= 3) {
+              // Log first 3 upstream messages to verify protocol
+              try {
+                const text = isBinary ? '' : data.toString();
+                console.log(`[goat-live] upstream msg #${msgFromUpstream}:`, text.slice(0, 300));
+              } catch { /* ignore */ }
+            }
+            if (clientWs.readyState === 1) {
+              clientWs.send(data, { binary: isBinary });
+            }
+          });
+
+          upstreamWs.on('close', (code, reason) => {
+            const reasonText = reason?.toString() || '';
+            console.log(`[goat-live] Upstream closed: ${code} "${reasonText}"`);
+            // Forward the close reason to the client so the UI can show it
+            try {
+              clientWs.send(JSON.stringify({
+                _proxyError: {
+                  reason: 'upstream-closed',
+                  code,
+                  message: reasonText || `Upstream closed with code ${code}`,
+                },
+              }));
+            } catch { /* ignore */ }
+            cleanup('upstream-closed');
+          });
+          upstreamWs.on('error', (err) => {
+            console.warn('[goat-live] upstream error:', err.message, err.stack?.split('\n')[1]?.trim() || '');
+            try {
+              clientWs.send(JSON.stringify({
+                _proxyError: {
+                  reason: 'upstream-error',
+                  message: err.message,
+                },
+              }));
+            } catch { /* ignore */ }
+            cleanup('upstream-error');
+          });
+
+          clientWs.on('message', (data, isBinary) => {
+            msgFromClient++;
+            if (msgFromClient === 1) {
+              try {
+                console.log('[goat-live] first client msg:', data.toString().slice(0, 400));
+              } catch { /* ignore */ }
+            }
+            if (!upstreamOpen) {
+              pendingFromClient.push(isBinary ? (data as Buffer) : data.toString());
+              return;
+            }
+            try { upstreamWs.send(data, { binary: isBinary }); } catch { /* ignore */ }
+          });
+
+          clientWs.on('close', () => cleanup('client-closed'));
+          clientWs.on('error', (err) => {
+            console.warn('[goat-live] client error:', err.message);
+            cleanup('client-error');
+          });
+        });
+      });
+    },
+  };
+}
+
+/**
  * Widget agent plugin — serves /widget-agent (health + generate).
  * Uses Gemini to generate self-contained HTML widgets streamed as SSE.
  */
@@ -1068,6 +1246,7 @@ export default defineConfig(({ mode }) => {
       htmlVariantPlugin(activeMeta, activeVariant, isDesktopBuild),
       aaiiBootstrapPlugin(),
       widgetAgentPlugin(),
+      goatLivePlugin(),
       onDemandInsightsPlugin(),
       polymarketPlugin(),
       rssProxyPlugin(),

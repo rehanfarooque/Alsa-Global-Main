@@ -806,20 +806,27 @@ export class Panel {
     });
     overlayHeader.appendChild(closeOverlayBtn);
 
-    // Clone content into overlay
-    const contentClone = document.createElement('div');
-    contentClone.className = 'panel-expand-content';
-    // Mirror live content with a MutationObserver so data updates show in the overlay
-    const syncContent = () => {
-      contentClone.innerHTML = this.content.innerHTML;
-    };
-    syncContent();
-    const observer = new MutationObserver(syncContent);
-    observer.observe(this.content, { childList: true, subtree: true, characterData: true, attributes: true });
+    // Move (NOT clone) the live content into the overlay. Cloning via
+    // innerHTML resets iframes (they reload empty) and breaks any in-flight
+    // chart libraries that hold canvas refs. Moving the actual DOM node
+    // preserves every iframe's load state, all JS inside, and avoids
+    // double-rendering the same panel. On close we put it back where it was.
+    const contentHost = document.createElement('div');
+    contentHost.className = 'panel-expand-content';
+    // Stash a placeholder in the original spot so we can put content back exactly there
+    const placeholder = document.createElement('div');
+    placeholder.style.display = 'none';
+    placeholder.dataset.panelExpandPlaceholder = 'true';
+    this.content.parentNode?.insertBefore(placeholder, this.content);
+    contentHost.appendChild(this.content);
+    // Ensure the content fills the expanded area
+    this.content.classList.add('panel-content-expanded');
 
     inner.appendChild(overlayHeader);
-    inner.appendChild(contentClone);
+    inner.appendChild(contentHost);
     overlay.appendChild(inner);
+
+    (overlay as any).__placeholder = placeholder;
 
     // Click outside inner to close
     overlay.addEventListener('click', (e) => {
@@ -832,7 +839,6 @@ export class Panel {
     };
     document.addEventListener('keydown', this._expandKeyHandler);
 
-    (overlay as any).__observer = observer;
     this._expandOverlay = overlay;
     document.body.appendChild(overlay);
     document.body.classList.add('panel-expanded-active');
@@ -846,7 +852,15 @@ export class Panel {
   private _closeExpandOverlay(): void {
     if (!this._expandOverlay) return;
     const overlay = this._expandOverlay;
-    (overlay as any).__observer?.disconnect();
+
+    // Move content back BEFORE the overlay animates out, so the panel is
+    // populated again the instant the overlay disappears (no flash of empty).
+    const placeholder = (overlay as any).__placeholder as HTMLElement | undefined;
+    if (placeholder && this.content) {
+      this.content.classList.remove('panel-content-expanded');
+      placeholder.parentNode?.insertBefore(this.content, placeholder);
+      placeholder.remove();
+    }
 
     overlay.classList.remove('visible');
     setTimeout(() => overlay.remove(), 200);

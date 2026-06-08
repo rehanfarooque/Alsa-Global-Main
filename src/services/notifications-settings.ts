@@ -25,6 +25,83 @@ import { SITE_VARIANT } from '@/config/variant';
 const QUIET_HOURS_BATCH_ENABLED = import.meta.env.VITE_QUIET_HOURS_BATCH_ENABLED !== '0';
 const DIGEST_CRON_ENABLED = import.meta.env.VITE_DIGEST_CRON_ENABLED !== '0';
 
+// ─── Local-mode notification configuration (self-host) ───────────────────────
+// Persisted in localStorage. Read/written by both the settings UI and any
+// alert-emitter elsewhere in the app via `dispatchLocalNotification(text)`.
+const LOCAL_NOTIF_KEY = 'worldmonitor.notifs.local.v1';
+
+interface LocalNotifCfg {
+  browserPush: boolean;
+  telegramToken: string;
+  telegramChatId: string;
+  discordWebhook: string;
+  customWebhook: string;
+}
+
+function defaultLocalNotifCfg(): LocalNotifCfg {
+  return { browserPush: false, telegramToken: '', telegramChatId: '', discordWebhook: '', customWebhook: '' };
+}
+
+function readLocalNotifCfg(): LocalNotifCfg {
+  try {
+    const raw = localStorage.getItem(LOCAL_NOTIF_KEY);
+    if (!raw) return defaultLocalNotifCfg();
+    return { ...defaultLocalNotifCfg(), ...JSON.parse(raw) };
+  } catch { return defaultLocalNotifCfg(); }
+}
+
+function writeLocalNotifCfg(cfg: LocalNotifCfg): void {
+  try { localStorage.setItem(LOCAL_NOTIF_KEY, JSON.stringify(cfg)); } catch { /* ignore */ }
+}
+
+/**
+ * Send a notification to every configured local channel. Returns count of
+ * successful deliveries. Safe to call from anywhere (ARGUS tools, alert engine).
+ */
+export async function dispatchLocalNotification(text: string): Promise<number> {
+  const cfg = readLocalNotifCfg();
+  let ok = 0;
+
+  if (cfg.browserPush && typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+    try { new Notification('World Monitor', { body: text.slice(0, 240) }); ok++; } catch { /* ignore */ }
+  }
+
+  if (cfg.telegramToken && cfg.telegramChatId) {
+    try {
+      const r = await fetch(`https://api.telegram.org/bot${cfg.telegramToken}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chat_id: cfg.telegramChatId, text }),
+      });
+      if (r.ok) ok++;
+    } catch { /* ignore */ }
+  }
+
+  if (cfg.discordWebhook) {
+    try {
+      const r = await fetch(cfg.discordWebhook, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: text.slice(0, 1900) }),
+      });
+      if (r.ok || r.status === 204) ok++;
+    } catch { /* ignore */ }
+  }
+
+  if (cfg.customWebhook) {
+    try {
+      const r = await fetch(cfg.customWebhook, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      if (r.ok) ok++;
+    } catch { /* ignore */ }
+  }
+
+  return ok;
+}
+
 export interface NotificationsSettingsHost {
   isSignedIn?: boolean;
 }
@@ -44,9 +121,62 @@ export function renderNotificationsSettings(host: NotificationsSettingsHost): No
     html += `<div class="us-notif-content" id="usNotifContent" style="display:none"></div>`;
     html += `</div>`;
   } else {
-    html += `<div class="wm-pref-group-content wm-notif-tab-content">`;
-    html += `<div class="ai-flow-toggle-desc">Get real-time intelligence alerts delivered to Telegram, Slack, Discord, and Email with configurable sensitivity, quiet hours, and digest scheduling.</div>`;
-    html += `<button type="button" class="panel-locked-cta" id="usNotifUpgradeBtn">Upgrade to Pro</button>`;
+    // Local-mode Notifications: configure browser push (works without backend)
+    // and persist channel hooks (Telegram bot / Discord webhook / generic webhook)
+    // to localStorage. The dashboard fires events to whichever channel is enabled
+    // when ARGUS or the alert engine flags something.
+    const cfg = readLocalNotifCfg();
+    html += `<div class="wm-pref-group-content wm-notif-tab-content us-notif-local">`;
+    html += `<div class="ai-flow-toggle-desc">Configure where your intelligence alerts land. Browser push works offline; webhook/Telegram/Discord deliver to your own channel.</div>`;
+
+    // Browser push toggle
+    const pushOn = cfg.browserPush;
+    html += `<div class="us-notif-local-row">
+      <div class="us-notif-local-label">
+        <strong>Browser push</strong>
+        <span class="us-notif-local-sub">In-browser desktop notifications. Permission required.</span>
+      </div>
+      <label class="wm-switch">
+        <input type="checkbox" id="usNotifBrowserPush" ${pushOn ? 'checked' : ''} />
+        <span class="wm-switch-slider"></span>
+      </label>
+    </div>`;
+
+    // Telegram
+    html += `<div class="us-notif-local-row vertical">
+      <div class="us-notif-local-label">
+        <strong>Telegram bot</strong>
+        <span class="us-notif-local-sub">Paste your bot token + chat ID. Get token from @BotFather.</span>
+      </div>
+      <input type="password" class="us-notif-local-input" id="usNotifTgToken" placeholder="Bot token (123456:ABC-...)" value="${escapeHtml(cfg.telegramToken)}" />
+      <input type="text" class="us-notif-local-input" id="usNotifTgChat" placeholder="Chat ID (e.g. 123456789 or @yourchannel)" value="${escapeHtml(cfg.telegramChatId)}" />
+    </div>`;
+
+    // Discord
+    html += `<div class="us-notif-local-row vertical">
+      <div class="us-notif-local-label">
+        <strong>Discord webhook</strong>
+        <span class="us-notif-local-sub">Server Settings → Integrations → Webhooks → Copy URL.</span>
+      </div>
+      <input type="password" class="us-notif-local-input" id="usNotifDiscord" placeholder="https://discord.com/api/webhooks/..." value="${escapeHtml(cfg.discordWebhook)}" />
+    </div>`;
+
+    // Custom webhook
+    html += `<div class="us-notif-local-row vertical">
+      <div class="us-notif-local-label">
+        <strong>Custom webhook (Slack-compatible)</strong>
+        <span class="us-notif-local-sub">POST JSON {text} to any URL. Slack incoming webhooks work as-is.</span>
+      </div>
+      <input type="password" class="us-notif-local-input" id="usNotifWebhook" placeholder="https://..." value="${escapeHtml(cfg.customWebhook)}" />
+    </div>`;
+
+    // Test + save
+    html += `<div class="us-notif-local-footer">
+      <button type="button" class="us-notif-local-test" id="usNotifTest">Send test alert</button>
+      <button type="button" class="us-notif-local-save" id="usNotifSave">Save</button>
+      <span class="us-notif-local-status" id="usNotifLocalStatus" aria-live="polite"></span>
+    </div>`;
+
     html += `</div>`;
   }
 
@@ -57,20 +187,68 @@ export function renderNotificationsSettings(host: NotificationsSettingsHost): No
       const { signal } = ac;
 
       if (!isPro) {
-        const upgradeBtn = container.querySelector<HTMLButtonElement>('#usNotifUpgradeBtn');
-        if (upgradeBtn) {
-          upgradeBtn.addEventListener('click', () => {
-            if (!host.isSignedIn) {
-              import('@/services/clerk').then(m => m.openSignIn()).catch(() => {
-                window.open('/', '_blank');
-              });
-              return;
+        // Local-mode wiring: persist config + run the test alert.
+        const pushChk    = container.querySelector<HTMLInputElement>('#usNotifBrowserPush');
+        const tgToken    = container.querySelector<HTMLInputElement>('#usNotifTgToken');
+        const tgChat     = container.querySelector<HTMLInputElement>('#usNotifTgChat');
+        const discordIn  = container.querySelector<HTMLInputElement>('#usNotifDiscord');
+        const webhookIn  = container.querySelector<HTMLInputElement>('#usNotifWebhook');
+        const saveBtn    = container.querySelector<HTMLButtonElement>('#usNotifSave');
+        const testBtn    = container.querySelector<HTMLButtonElement>('#usNotifTest');
+        const statusEl   = container.querySelector<HTMLSpanElement>('#usNotifLocalStatus');
+
+        const showStatus = (msg: string, kind: 'ok' | 'err' = 'ok') => {
+          if (!statusEl) return;
+          statusEl.textContent = msg;
+          statusEl.dataset.kind = kind;
+          setTimeout(() => { if (statusEl.textContent === msg) statusEl.textContent = ''; }, 3500);
+        };
+
+        if (pushChk) {
+          pushChk.addEventListener('change', async () => {
+            if (pushChk.checked && typeof Notification !== 'undefined' && Notification.permission !== 'granted') {
+              try {
+                const perm = await Notification.requestPermission();
+                if (perm !== 'granted') {
+                  pushChk.checked = false;
+                  showStatus('Browser denied notification permission.', 'err');
+                  return;
+                }
+              } catch {
+                pushChk.checked = false;
+                showStatus('Push not supported here.', 'err');
+                return;
+              }
             }
-            import('@/services/checkout').then(m => import('@/config/products').then(p => m.startCheckout(p.DEFAULT_UPGRADE_PRODUCT))).catch(() => {
-              window.open('/', '_blank');
-            });
           }, { signal });
         }
+
+        saveBtn?.addEventListener('click', () => {
+          writeLocalNotifCfg({
+            browserPush:     pushChk?.checked ?? false,
+            telegramToken:   tgToken?.value.trim() ?? '',
+            telegramChatId:  tgChat?.value.trim() ?? '',
+            discordWebhook:  discordIn?.value.trim() ?? '',
+            customWebhook:   webhookIn?.value.trim() ?? '',
+          });
+          showStatus('Saved.', 'ok');
+        }, { signal });
+
+        testBtn?.addEventListener('click', async () => {
+          // Auto-save before testing so the user doesn't have to click both
+          writeLocalNotifCfg({
+            browserPush:     pushChk?.checked ?? false,
+            telegramToken:   tgToken?.value.trim() ?? '',
+            telegramChatId:  tgChat?.value.trim() ?? '',
+            discordWebhook:  discordIn?.value.trim() ?? '',
+            customWebhook:   webhookIn?.value.trim() ?? '',
+          });
+          showStatus('Sending…', 'ok');
+          const delivered = await dispatchLocalNotification('World Monitor test alert: notifications working.');
+          if (delivered > 0) showStatus(`Delivered to ${delivered} channel(s).`, 'ok');
+          else showStatus('No channels configured or all failed. Check tokens/URLs.', 'err');
+        }, { signal });
+
         return () => ac.abort();
       }
 

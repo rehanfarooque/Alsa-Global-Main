@@ -116,7 +116,6 @@ import { handleCheckoutReturn } from '@/services/checkout-return';
 import { initCheckoutOverlay, destroyCheckoutOverlay, showCheckoutSuccess, consumePostCheckoutFlag, clearCheckoutAttempt } from '@/services/checkout';
 import { showCheckoutFailureBanner } from '@/components/checkout-failure-banner';
 import { McpDataPanel } from '@/components/McpDataPanel';
-import { openMcpConnectModal } from '@/components/McpConnectModal';
 import { loadMcpPanels, saveMcpPanel } from '@/services/mcp-store';
 import type { McpPanelSpec } from '@/services/mcp-store';
 import { getAuthState, subscribeAuthState } from '@/services/auth-state';
@@ -559,6 +558,7 @@ export class PanelLayoutManager implements AppModule {
           ${this.ctx.isDesktopApp ? '' : `<button class="copy-link-btn" id="copyLinkBtn">${t('header.copyLink')}</button>`}
           ${this.ctx.isDesktopApp ? '' : `<button class="fullscreen-btn" id="fullscreenBtn" title="${t('header.fullscreen')}">⛶</button>`}
           ${SITE_VARIANT === 'happy' ? `<button class="tv-mode-btn" id="tvModeBtn" title="TV Mode (Shift+T)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></button>` : ''}
+          <button class="goat-mode-btn" id="goatModeBtn" title="Activate ARGUS — voice AI assistant"><span class="goat-mode-icon">◆</span><span class="goat-mode-label">GOAT</span></button>
           <span id="unifiedSettingsMount"></span>
         </div>
       </div>
@@ -1541,21 +1541,22 @@ export class PanelLayoutManager implements AppModule {
     panelsGrid.appendChild(proBlock);
 
     const mcpBlock = document.createElement('button');
-    mcpBlock.className = 'add-panel-block mcp-panel-block';
-    mcpBlock.setAttribute('aria-label', t('mcp.connectPanel'));
+    mcpBlock.className = 'add-panel-block mcp-panel-block mcp-panel-block-unavailable';
+    mcpBlock.setAttribute('aria-label', `${t('mcp.connectPanel')} (unavailable)`);
+    mcpBlock.setAttribute('disabled', 'true');
+    mcpBlock.title = 'MCP connector \u2014 coming soon';
     const mcpIcon = document.createElement('span');
     mcpIcon.className = 'add-panel-block-icon';
     mcpIcon.textContent = '\u26a1';
     const mcpLabel = document.createElement('span');
     mcpLabel.className = 'add-panel-block-label';
     mcpLabel.textContent = t('mcp.connectPanel');
+    const mcpSoon = document.createElement('span');
+    mcpSoon.className = 'add-panel-block-soon';
+    mcpSoon.textContent = 'COMING SOON';
     mcpBlock.appendChild(mcpIcon);
     mcpBlock.appendChild(mcpLabel);
-    mcpBlock.addEventListener('click', () => {
-      openMcpConnectModal({
-        onComplete: (spec) => this.addMcpPanel(spec),
-      });
-    });
+    mcpBlock.appendChild(mcpSoon);
     panelsGrid.appendChild(mcpBlock);
 
     // Reactively show/hide Pro-only UI blocks ("Create Interactive Widget" +

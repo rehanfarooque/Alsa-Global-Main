@@ -336,6 +336,9 @@ export class EventHandlerManager implements AppModule {
       track('search-open', { source: 'desktop' });
       openSearch();
     });
+    document.getElementById('goatModeBtn')?.addEventListener('click', () => {
+      void import('@/components/goat/GoatMode').then((m) => m.toggleGoatMode(this.ctx));
+    });
     document.getElementById('mobileSearchBtn')?.addEventListener('click', () => {
       track('search-open', { source: 'mobile' });
       openSearch();
