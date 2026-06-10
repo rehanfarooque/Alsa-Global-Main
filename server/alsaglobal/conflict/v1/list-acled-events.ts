@@ -37,21 +37,19 @@ async function fetchGdeltConflicts(country?: string): Promise<AcledConflictEvent
   const query = encodeURIComponent(`battle explosion airstrike attack conflict violence${countryFilter}`);
   const url = `https://api.gdeltproject.org/api/v2/geo/geo?query=${query}&TIMESPAN=2weeks&MAXPOINTS=300&format=JSON`;
 
+  // GDELT is the conflict-event fallback after ACLED. It's frequently down,
+  // 404s, or rate-limits — and we have a static fallback after that, so the
+  // user always sees something. Silent here to keep the dev console quiet.
   let resp: Response;
   try {
     resp = await fetch(url, {
       headers: { 'User-Agent': CHROME_UA, Accept: 'application/json' },
       signal: AbortSignal.timeout(GDELT_TIMEOUT_MS),
     });
-  } catch (err) {
-    console.warn('[GDELT] fetch error:', (err as Error).message);
+  } catch {
     return [];
   }
-
-  if (!resp.ok) {
-    console.warn(`[GDELT] HTTP ${resp.status}`);
-    return [];
-  }
+  if (!resp.ok) return [];
 
   let json: { features?: GdeltGeoFeature[] };
   try {
@@ -237,7 +235,9 @@ export async function listAcledEvents(
 ): Promise<ListAcledEventsResponse> {
   const cacheKey = `${req.country || 'all'}:${req.start || 0}:${req.end || 0}`;
 
-  // Try ACLED first
+  // ACLED → GDELT → static fallback. Each leg is a normal degraded-mode
+  // path on a self-host without paid API keys, so they're silent here and
+  // we always return real (or known-static) events.
   try {
     const events = await fetchAcledConflicts(req);
     if (events.length > 0) {
@@ -245,18 +245,11 @@ export async function listAcledEvents(
       fallbackCache.set(cacheKey, { data: result, ts: Date.now() });
       return result;
     }
-  } catch (err) {
-    console.warn('[ACLED] primary fetch failed:', (err as Error).message);
-  }
+  } catch { /* expected when ACLED API key is absent */ }
 
-  // Check in-memory cache (previous good live data)
   const cached = fallbackCache.get(cacheKey);
-  if (cached && Date.now() - cached.ts < FALLBACK_TTL_MS) {
-    return cached.data;
-  }
+  if (cached && Date.now() - cached.ts < FALLBACK_TTL_MS) return cached.data;
 
-  // GDELT fallback (may be unavailable from some networks)
-  console.info('[ACLED] falling back to GDELT for conflict events');
   try {
     const events = await fetchGdeltConflicts(req.country);
     if (events.length > 0) {
@@ -264,12 +257,8 @@ export async function listAcledEvents(
       fallbackCache.set(cacheKey, { data: result, ts: Date.now() });
       return result;
     }
-  } catch (err) {
-    console.warn('[GDELT] fallback failed:', (err as Error).message);
-  }
+  } catch { /* GDELT often refuses non-Google IPs */ }
 
-  // Last resort: static known conflict zones
-  console.info('[Conflict] using static known conflict zones fallback');
   const staticEvents = buildStaticFallback(req.country);
   return { events: staticEvents, pagination: undefined };
 }

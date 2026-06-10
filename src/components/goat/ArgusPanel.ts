@@ -159,6 +159,26 @@ const STYLE_CSS = `
 .argus-popout-body::-webkit-scrollbar { width: 6px; }
 .argus-popout-body::-webkit-scrollbar-thumb { background: rgba(0,212,255,0.25); border-radius: 3px; }
 
+.argus-popout-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 6px 0;
+}
+.argus-popout-skeleton {
+  background: linear-gradient(90deg, rgba(255,255,255,0.04) 0%, rgba(0,212,255,0.10) 50%, rgba(255,255,255,0.04) 100%);
+  background-size: 200% 100%;
+  animation: argus-skeleton-shimmer 1.2s linear infinite;
+  border-radius: 6px;
+  height: 16px;
+}
+.argus-popout-skeleton.--tall { height: 38px; }
+.argus-popout-skeleton.--wide { width: 70%; }
+@keyframes argus-skeleton-shimmer {
+  from { background-position: 200% 0; }
+  to   { background-position: -200% 0; }
+}
+
 .argus-popout-stat-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
@@ -236,6 +256,129 @@ const STYLE_CSS = `
   padding: 18px 0;
   text-align: center;
 }
+
+/* ── Watchlist (each symbol is a mini row with sparkline) ──────────────── */
+.argus-watchlist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.argus-watch-row {
+  display: grid;
+  grid-template-rows: auto auto;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+.argus-watch-row:hover {
+  border-color: rgba(0, 212, 255, 0.35);
+  background: rgba(0, 212, 255, 0.04);
+}
+.argus-watch-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.argus-watch-sym {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #fff;
+}
+.argus-watch-px {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+.argus-watch-meta {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 10px;
+  margin-top: 4px;
+}
+.argus-watch-spark {
+  width: 100%;
+  height: 24px;
+}
+.argus-watch-spark .spark-line.--up   { fill: none; stroke: #58e6c8; stroke-width: 1.6; }
+.argus-watch-spark .spark-line.--down { fill: none; stroke: #ff6b8a; stroke-width: 1.6; }
+.argus-watch-spark .spark-area.--up   { fill: rgba(88, 230, 200, 0.14); stroke: none; }
+.argus-watch-spark .spark-area.--down { fill: rgba(255, 107, 138, 0.12); stroke: none; }
+.argus-watch-chg {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  min-width: 70px;
+  text-align: right;
+}
+.argus-watch-chg.--up   { color: #58e6c8; }
+.argus-watch-chg.--down { color: #ff6b8a; }
+
+/* ── Sector heatmap grid ─────────────────────────────────────────────── */
+.argus-heatmap {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+.argus-heat-cell {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: transform 0.18s ease;
+  min-height: 76px;
+  justify-content: space-between;
+}
+.argus-heat-cell:hover { transform: scale(1.03); }
+.argus-heat-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #fff;
+  line-height: 1.1;
+}
+.argus-heat-sub {
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: rgba(255, 255, 255, 0.55);
+}
+.argus-heat-pct {
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  margin-top: 4px;
+}
+.argus-heat-pct.--up   { color: #58e6c8; }
+.argus-heat-pct.--down { color: #ff8aa3; }
+
+/* ── TradingView chart embed ──────────────────────────────────────────── */
+.argus-popout[data-kind="chart"] {
+  width: clamp(420px, 50vw, 820px) !important;
+  max-width: 90vw;
+}
+.argus-popout[data-kind="chart"] .argus-popout-body { padding: 0; }
+.argus-chart-wrap {
+  width: 100%;
+  height: 100%;
+  min-height: 360px;
+  display: block;
+  position: relative;
+  overflow: hidden;
+  border-radius: 0 0 14px 14px;
+}
+.argus-chart-frame {
+  width: 100%;
+  height: 100%;
+  min-height: 360px;
+  border: 0;
+  display: block;
+  background: #0a0e16;
+}
 `;
 
 function ensureStyle(): void {
@@ -258,7 +401,7 @@ function ensureRoot(): HTMLElement {
 
 // ─── Spec types ─────────────────────────────────────────────────────────────
 
-export type ArgusPanelKind = 'quote' | 'news' | 'brief' | 'kv' | 'text' | 'panel-confirm';
+export type ArgusPanelKind = 'quote' | 'news' | 'brief' | 'kv' | 'text' | 'panel-confirm' | 'watchlist' | 'heatmap' | 'chart';
 
 export interface ArgusPanelSpec {
   id?: string;
@@ -275,6 +418,15 @@ export interface ArgusPanelSpec {
   confirm?: { panelId: string; name?: string };
   /** Auto-refresh the quote every N ms via the list-market-quotes endpoint, animating each tick. */
   liveRefreshMs?: number;
+  /** A watchlist of symbols — each rendered as a mini card with price + change + sparkline. */
+  watchlist?: { symbols: string[]; refreshMs?: number };
+  /** A heatmap grid — each cell is colour-graded by `change` (% gain/loss). */
+  heatmap?: { cells: Array<{ label: string; value: number; change: number; sub?: string }> };
+  /** TradingView embedded chart. symbol uses TradingView form: BINANCE:BTCUSDT, NASDAQ:AAPL, FX:EURUSD, etc. */
+  chart?: { symbol: string; interval?: string; theme?: 'dark' | 'light' };
+  /** Render a skeleton instead of the kind-specific body. Used when the panel
+   *  is shown FIRST and data lands later via updateArgusPanel(). */
+  loading?: boolean;
 }
 
 // ─── State ──────────────────────────────────────────────────────────────────
@@ -282,7 +434,8 @@ export interface ArgusPanelSpec {
 interface PanelMeta {
   el: HTMLElement;
   liveTimer?: ReturnType<typeof setInterval>;
-  priceHistory?: number[]; // for sparkline
+  priceHistory?: number[]; // for single-quote sparkline
+  watchHistory?: Map<string, number[]>; // per-symbol sparkline for watchlist
   /** Content fingerprint — if a new openArgusPanel call has the same key, we close the old first. */
   dedupeKey: string;
 }
@@ -399,6 +552,7 @@ function renderConfirm(c: ArgusPanelSpec['confirm']): string {
 }
 
 function renderBody(spec: ArgusPanelSpec): string {
+  if (spec.loading) return renderLoading(spec.kind);
   switch (spec.kind) {
     case 'quote':         return renderQuote(spec.quote, !!spec.liveRefreshMs);
     case 'news':          return renderNews(spec.news);
@@ -406,7 +560,97 @@ function renderBody(spec: ArgusPanelSpec): string {
     case 'kv':            return renderKv(spec.kv);
     case 'text':          return `<div>${escape(spec.text ?? '')}</div>`;
     case 'panel-confirm': return renderConfirm(spec.confirm);
+    case 'watchlist':     return renderWatchlist(spec.watchlist);
+    case 'heatmap':       return renderHeatmap(spec.heatmap);
+    case 'chart':         return renderChart(spec.chart);
   }
+}
+
+function renderLoading(kind: ArgusPanelKind): string {
+  if (kind === 'quote') {
+    return `<div class="argus-popout-loading">
+      <div class="argus-popout-skeleton --tall"></div>
+      <div class="argus-popout-skeleton --wide"></div>
+      <div class="argus-popout-skeleton"></div>
+    </div>`;
+  }
+  return `<div class="argus-popout-loading">
+    <div class="argus-popout-skeleton"></div>
+    <div class="argus-popout-skeleton --wide"></div>
+    <div class="argus-popout-skeleton"></div>
+    <div class="argus-popout-skeleton --wide"></div>
+  </div>`;
+}
+
+/**
+ * Embed a TradingView Advanced Chart for the given symbol. Uses the free
+ * widget iframe so no auth / API key needed. Symbol must be TradingView form
+ * (EXCHANGE:TICKER) — see tools/AgentTools.ts for the natural-language map.
+ */
+function renderChart(c: ArgusPanelSpec['chart']): string {
+  if (!c?.symbol) return `<div class="argus-popout-empty">No symbol given.</div>`;
+  // TradingView interval codes: 1, 5, 15, 60 (1h), 240 (4h), D, W, M
+  const interval = c.interval ?? '60';
+  const theme = c.theme ?? 'dark';
+  // tradingview.com/widgetembed/ is the lightweight iframe form. No
+  // post-message scripting required, just URL params.
+  const sym = encodeURIComponent(c.symbol);
+  const src = `https://s.tradingview.com/widgetembed/?frameElementId=tradingview-${Date.now()}` +
+              `&symbol=${sym}&interval=${interval}&hidesidetoolbar=1&symboledit=1` +
+              `&saveimage=0&toolbarbg=0a0e16&studies=[]&theme=${theme}&style=1` +
+              `&timezone=Etc%2FUTC&withdateranges=1&hideideas=1` +
+              `&studies_overrides={}&overrides={}&enabled_features=[]&disabled_features=[]&locale=en`;
+  return `
+    <div class="argus-chart-wrap">
+      <iframe class="argus-chart-frame"
+              src="${src}"
+              loading="lazy"
+              referrerpolicy="no-referrer"
+              allowtransparency="true"
+              allow="clipboard-write"
+              title="TradingView chart for ${escape(c.symbol)}"></iframe>
+    </div>
+  `;
+}
+
+function renderWatchlist(w: ArgusPanelSpec['watchlist']): string {
+  if (!w || w.symbols.length === 0) return `<div class="argus-popout-empty">No symbols.</div>`;
+  const items = w.symbols.map((sym) => `
+    <div class="argus-watch-row" data-watch-sym="${escape(sym)}">
+      <div class="argus-watch-head">
+        <span class="argus-watch-sym">${escape(sym)}</span>
+        <span class="argus-watch-px" data-watch-px>—</span>
+      </div>
+      <div class="argus-watch-meta">
+        <svg class="argus-watch-spark" viewBox="0 0 120 28" preserveAspectRatio="none" data-watch-spark>
+          <path class="spark-area" data-watch-area d="" />
+          <path class="spark-line" data-watch-line d="" />
+        </svg>
+        <span class="argus-watch-chg" data-watch-chg>—</span>
+      </div>
+    </div>
+  `).join('');
+  return `<div class="argus-watchlist">${items}</div>`;
+}
+
+function renderHeatmap(h: ArgusPanelSpec['heatmap']): string {
+  if (!h || h.cells.length === 0) return `<div class="argus-popout-empty">No data.</div>`;
+  const cells = h.cells.map((c) => {
+    // Colour intensity by change %: cap at ±5% for visual range
+    const clamped = Math.max(-5, Math.min(5, c.change));
+    const t = Math.abs(clamped) / 5;     // 0..1
+    const baseColor = c.change >= 0 ? '88, 230, 200' : '255, 107, 138';
+    const bg = `rgba(${baseColor}, ${(0.12 + t * 0.45).toFixed(2)})`;
+    const arrow = c.change >= 0 ? '▲' : '▼';
+    return `
+      <div class="argus-heat-cell" style="background:${bg};border-color:rgba(${baseColor},${(0.35 + t * 0.4).toFixed(2)})">
+        <div class="argus-heat-label">${escape(c.label)}</div>
+        ${c.sub ? `<div class="argus-heat-sub">${escape(c.sub)}</div>` : ''}
+        <div class="argus-heat-pct ${c.change >= 0 ? '--up' : '--down'}">${arrow} ${Math.abs(c.change).toFixed(2)}%</div>
+      </div>
+    `;
+  }).join('');
+  return `<div class="argus-heatmap">${cells}</div>`;
 }
 
 /** Build sparkline path strings from price history. */
@@ -424,6 +668,80 @@ function buildSparkPaths(history: number[]): { line: string; area: string } {
   const line = points.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
   const first = points[0]!;
   const last = points[points.length - 1]!;
+  const area = `M${first[0].toFixed(1)},${H - PAD} ${line.replace(/^M/, 'L')} L${last[0].toFixed(1)},${H - PAD} Z`;
+  return { line, area };
+}
+
+/** Refresh a live watchlist panel — parallel-fetches all symbols, animates each row. */
+async function refreshWatchlistPanel(id: string, symbols: string[]): Promise<void> {
+  const meta = openPanels.get(id);
+  if (!meta) return;
+  try {
+    const res = await fetch(`/api/market/v1/list-market-quotes?symbols=${symbols.join(',')}`);
+    if (!res.ok) return;
+    const data = await res.json() as { quotes?: Array<{ symbol: string; price: number; change: number }> };
+    const byKey = new Map<string, { price: number; change: number }>();
+    for (const q of data.quotes ?? []) byKey.set(q.symbol.toUpperCase(), { price: q.price, change: q.change });
+
+    if (!meta.watchHistory) meta.watchHistory = new Map();
+
+    for (const sym of symbols) {
+      const row = meta.el.querySelector<HTMLElement>(`[data-watch-sym="${cssAttrEscape(sym)}"]`);
+      if (!row) continue;
+      const q = byKey.get(sym.toUpperCase());
+      if (!q) continue;
+
+      // Track per-symbol price history for the mini sparkline
+      let hist = meta.watchHistory.get(sym) ?? [];
+      hist.push(q.price);
+      if (hist.length > 30) hist = hist.slice(-30);
+      meta.watchHistory.set(sym, hist);
+
+      // Update DOM
+      const pxEl = row.querySelector<HTMLElement>('[data-watch-px]');
+      const chgEl = row.querySelector<HTMLElement>('[data-watch-chg]');
+      const lineEl = row.querySelector<SVGPathElement>('[data-watch-line]');
+      const areaEl = row.querySelector<SVGPathElement>('[data-watch-area]');
+      if (pxEl) pxEl.textContent = fmtPrice(q.price);
+      if (chgEl) {
+        chgEl.textContent = `${q.change >= 0 ? '▲' : '▼'} ${Math.abs(q.change).toFixed(2)}%`;
+        chgEl.classList.toggle('--up', q.change >= 0);
+        chgEl.classList.toggle('--down', q.change < 0);
+      }
+      if (lineEl && areaEl && hist.length > 1) {
+        const { line, area } = buildSparkPathsForBox(hist, 120, 28);
+        lineEl.setAttribute('d', line);
+        areaEl.setAttribute('d', area);
+        const dirClass = q.change >= 0 ? '--up' : '--down';
+        lineEl.classList.remove('--up', '--down'); lineEl.classList.add(dirClass);
+        areaEl.classList.remove('--up', '--down'); areaEl.classList.add(dirClass);
+      }
+    }
+  } catch {
+    // best-effort — keep panel visible
+  }
+}
+
+/** Escape a value for use inside a CSS attribute selector. */
+function cssAttrEscape(s: string): string {
+  return s.replace(/["\\]/g, '\\$&');
+}
+
+/** Sparkline paths sized to an arbitrary box. */
+function buildSparkPathsForBox(history: number[], W: number, H: number): { line: string; area: string } {
+  if (history.length < 2) return { line: '', area: '' };
+  const min = Math.min(...history);
+  const max = Math.max(...history);
+  const span = max - min || 1;
+  const PAD = 2;
+  const pts = history.map((v, i) => {
+    const x = (i / (history.length - 1)) * (W - PAD * 2) + PAD;
+    const y = H - PAD - ((v - min) / span) * (H - PAD * 2);
+    return [x, y] as const;
+  });
+  const line = pts.map(([x, y], i) => `${i === 0 ? 'M' : 'L'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+  const first = pts[0]!;
+  const last = pts[pts.length - 1]!;
   const area = `M${first[0].toFixed(1)},${H - PAD} ${line.replace(/^M/, 'L')} L${last[0].toFixed(1)},${H - PAD} Z`;
   return { line, area };
 }
@@ -551,6 +869,7 @@ export function openArgusPanel(spec: ArgusPanelSpec): string {
   const panel = document.createElement('div');
   panel.className = 'argus-popout';
   panel.dataset.argusPanelId = id;
+  panel.dataset.kind = spec.kind;
   panel.innerHTML = `
     <div class="argus-popout-chrome">
       <div class="argus-popout-chrome-title">
@@ -572,26 +891,38 @@ export function openArgusPanel(spec: ArgusPanelSpec): string {
     <div class="argus-popout-body">${renderBody(spec)}</div>
   `;
 
-  // Column-stack on the right edge: each panel sits below the previous one
-  // at the same x, so they don't drift diagonally and they don't cover the
-  // avatar. If we exceed viewport height, wrap to a second column further left.
-  //
-  // When ARGUS is docked as a chat widget (bottom-right), shift our anchor
-  // further left so panels don't sit behind the dock. The dock is ~400 px
-  // wide with a 20 px gutter; 440 px keeps panels clear of it.
+  // Auto-pack: anchor from the LEFT edge of the viewport, stack panels in
+  // rows from left-to-right, then wrap to the next row when we run out of
+  // horizontal space. This keeps panels in the part of the screen the user is
+  // actually looking at (the map / left half) and away from the chat dock
+  // on the right.
+  const PANEL_W   = 360;
+  const PANEL_H   = 280;
+  const GAP       = 12;
+  const TOP_PAD   = 88;
+  const LEFT_PAD  = 24;
+  // Reserve room on the right for the chat dock when it's open.
   const isChatDocked = !!document.querySelector('.goat-overlay.chat-mode');
-  const DOCK_RESERVE = isChatDocked ? 440 : 24;
-  const COL_X       = DOCK_RESERVE;
-  const FIRST_Y     = 88;        // distance from top
-  const ROW_GAP     = 12;
-  const APPROX_H    = 280;       // assumed panel height; layout adjusts via CSS
-  const colHeight   = window.innerHeight - FIRST_Y - 24;
-  const perCol      = Math.max(1, Math.floor(colHeight / (APPROX_H + ROW_GAP)));
-  const indexInUI   = openPanels.size;
-  const col         = Math.floor(indexInUI / perCol);
-  const row         = indexInUI % perCol;
-  panel.style.top   = `${FIRST_Y + row * (APPROX_H + ROW_GAP)}px`;
-  panel.style.right = `${COL_X + col * 380}px`; // 380 = approx panel width + gap
+  const RIGHT_RESERVE = isChatDocked ? 440 : 24;
+  const usableW   = window.innerWidth - LEFT_PAD - RIGHT_RESERVE;
+  const perRow    = Math.max(1, Math.floor((usableW + GAP) / (PANEL_W + GAP)));
+
+  // Find the first empty slot — don't just rely on count, because panels can
+  // be closed individually. Scan slot-by-slot until we find one not occupied.
+  const occupied = new Set<string>();
+  for (const meta of openPanels.values()) {
+    const slot = meta.el.dataset.slot;
+    if (slot) occupied.add(slot);
+  }
+  let slotIdx = 0;
+  while (occupied.has(String(slotIdx))) slotIdx++;
+  const row = Math.floor(slotIdx / perRow);
+  const col = slotIdx % perRow;
+  panel.dataset.slot = String(slotIdx);
+  panel.style.left  = `${LEFT_PAD + col * (PANEL_W + GAP)}px`;
+  panel.style.top   = `${TOP_PAD + row * (PANEL_H + GAP)}px`;
+  panel.style.right = 'auto';
+  panel.style.bottom = 'auto';
 
   // Wire chrome actions
   const chrome = panel.querySelector<HTMLElement>('.argus-popout-chrome')!;
@@ -642,6 +973,15 @@ export function openArgusPanel(spec: ArgusPanelSpec): string {
     meta.liveTimer = setInterval(() => { void refreshLivePanel(id, sym); }, interval);
   }
 
+  // Watchlist: parallel-refresh all symbols on a single interval.
+  if (spec.kind === 'watchlist' && spec.watchlist) {
+    const interval = Math.max(3000, spec.watchlist.refreshMs ?? 6000);
+    const syms = spec.watchlist.symbols;
+    // Kick off an immediate refresh so the row prices appear without waiting
+    void refreshWatchlistPanel(id, syms);
+    meta.liveTimer = setInterval(() => { void refreshWatchlistPanel(id, syms); }, interval);
+  }
+
   // Animate in
   requestAnimationFrame(() => {
     panel.classList.add('--shown', '--flash');
@@ -659,6 +999,68 @@ export function openArgusPanel(spec: ArgusPanelSpec): string {
   });
 
   return id;
+}
+
+/**
+ * Refresh an already-open panel's content + banner subtitle in place, without
+ * closing/re-opening it. Used by tools that want to show the panel immediately
+ * (loading skeleton) and fill it in once the fetch lands — the panel never
+ * disappears, only the body swaps.
+ *
+ * Pass any subset of headline / subtitle / kind-specific data fields. Anything
+ * omitted keeps its current value.
+ */
+export function updateArgusPanel(id: string, patch: Partial<ArgusPanelSpec>): boolean {
+  const meta = openPanels.get(id);
+  if (!meta) return false;
+  const el = meta.el;
+
+  // Banner — only touch if patch provided a new value
+  if (patch.headline !== undefined) {
+    const h = el.querySelector<HTMLElement>('.argus-popout-headline');
+    if (h) h.textContent = patch.headline;
+  }
+  if (patch.subtitle !== undefined) {
+    const s = el.querySelector<HTMLElement>('.argus-popout-subtitle');
+    if (s) s.textContent = patch.subtitle;
+  }
+
+  // Body — rebuild from a synthetic spec that merges the patch on top of the
+  // existing data hint inferred from current DOM. We don't preserve old data
+  // across the call; callers pass the kind + new data when they want to swap.
+  const body = el.querySelector<HTMLElement>('.argus-popout-body');
+  if (body) {
+    const kind = (patch.kind ?? (el.dataset.kind as ArgusPanelKind | undefined)) ?? 'text';
+    const fullSpec = { kind, title: '', ...patch } as ArgusPanelSpec;
+    body.innerHTML = renderBody(fullSpec);
+
+    // Seed price history for fresh quote data so the sparkline starts populating
+    if (fullSpec.kind === 'quote' && fullSpec.quote && !patch.loading) {
+      if (!meta.priceHistory) meta.priceHistory = [];
+      meta.priceHistory.push(fullSpec.quote.price);
+    }
+
+    // Highlight-on-update so the user notices the swap
+    el.classList.remove('--flash');
+    void el.offsetWidth;
+    el.classList.add('--flash');
+    setTimeout(() => el.classList.remove('--flash'), 1200);
+
+    // Re-arm live refresh polling if the update supplied liveRefreshMs +
+    // a quote symbol. Cancel any prior timer first so we don't double-poll.
+    if (fullSpec.kind === 'quote' && fullSpec.liveRefreshMs && fullSpec.quote?.symbol) {
+      if (meta.liveTimer) clearInterval(meta.liveTimer);
+      const sym = fullSpec.quote.symbol;
+      const interval = Math.max(3000, fullSpec.liveRefreshMs);
+      meta.liveTimer = setInterval(() => { void refreshLivePanel(id, sym); }, interval);
+    } else if (fullSpec.kind === 'watchlist' && fullSpec.watchlist?.symbols.length) {
+      if (meta.liveTimer) clearInterval(meta.liveTimer);
+      const syms = fullSpec.watchlist.symbols;
+      const interval = Math.max(3000, fullSpec.watchlist.refreshMs ?? 6000);
+      meta.liveTimer = setInterval(() => { void refreshWatchlistPanel(id, syms); }, interval);
+    }
+  }
+  return true;
 }
 
 export function closeArgusPanel(id: string): boolean {

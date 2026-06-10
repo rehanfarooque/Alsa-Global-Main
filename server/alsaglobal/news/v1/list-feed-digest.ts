@@ -461,7 +461,11 @@ async function fetchAndParseRss(
     // from "direct blocked + relay 403/429" from "relay returned HTML".
     // Filter logs by `[feed-fetch]` to triage. Volume: one line per cache
     // miss per feed (capped by CACHE_TTL_EMPTY_S=300s + healthy=3600s).
-    if (source !== 'direct') {
+    // Per-feed observability — keep in production for triaging blocked
+    // feeds, but in self-host (no relay env set) "both-failed" just means
+    // RSS isn't reachable from this network. Silence to avoid spamming
+    // the console; opt in with VITE_LOG_FEED_FETCH=1 if you need it.
+    if (source !== 'direct' && process.env.VITE_LOG_FEED_FETCH === '1') {
       const host = (() => { try { return new URL(feed.url).hostname; } catch { return 'invalid-url'; } })();
       console.log(`[feed-fetch] variant=${variant} category=? host=${host} source=${source} relay_status=${relayStatus ?? 'n/a'} relay_shape=${relayBodyShape} feed=${feed.name}`);
     }
@@ -590,12 +594,16 @@ function parseRssXml(xml: string, feed: ServerFeed, variant: string): ParseResul
   // by the keyword `FEED_HEALTH_WARNING all-undated` — log aggregation can
   // grep for it. Defers a Redis-backed health-key wiring to a follow-up;
   // see the linked plan.
-  if (parsedTotal > 0 && items.length === 0 && droppedUndated > 0) {
+  // Both undated-feed warnings are gated behind VITE_LOG_FEED_HEALTH=1 — they
+  // fire constantly on a self-host where some feeds (IAEA, CrisisWatch, …)
+  // genuinely don't ship pubDates. Opt-in observability for ops.
+  const logFeedHealth = process.env.VITE_LOG_FEED_HEALTH === '1';
+  if (logFeedHealth && parsedTotal > 0 && items.length === 0 && droppedUndated > 0) {
     console.warn(
       `[digest] FEED_HEALTH_WARNING all-undated feed="${feed.name}" ` +
         `variant=${variant} parsed=${parsedTotal} dropped=${droppedUndated}`,
     );
-  } else if (droppedUndated > 0) {
+  } else if (logFeedHealth && droppedUndated > 0) {
     console.warn(
       `[digest] partial-undated feed="${feed.name}" variant=${variant} ` +
         `parsed=${parsedTotal} dropped=${droppedUndated} kept=${items.length}`,
@@ -1261,7 +1269,7 @@ async function buildDigest(variant: string, lang: string): Promise<ListFeedDiges
       droppedStaleTotal += items.length - fresh.length;
       results.set(category, fresh);
     }
-    if (droppedStaleTotal > 0) {
+    if (droppedStaleTotal > 0 && process.env.VITE_LOG_FEED_HEALTH === '1') {
       console.warn(
         `[digest] freshness floor dropped ${droppedStaleTotal} stale items ` +
           `(max age: ${maxAgeMs / (60 * 60 * 1000)}h)`,

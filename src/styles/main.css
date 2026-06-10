@@ -916,9 +916,20 @@ canvas,
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.65);
-  grid-template-rows: auto 1fr auto auto;
+  /* 5 visible rows (ticker is display:none in chat mode so it doesn't occupy
+     a row): topbar / avatar / transcript (FLEX) / presence / input.
+     The transcription row gets the 1fr so the chat history actually scrolls
+     within its bounds instead of pushing the input off-screen. */
+  grid-template-rows: auto auto 1fr auto auto;
   gap: 8px;
   pointer-events: auto;
+  overflow: hidden;
+}
+.goat-overlay.chat-mode .goat-transcription-wrap {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .goat-overlay.chat-mode .goat-overlay-topbar {
   padding: 6px 10px;
@@ -936,10 +947,17 @@ canvas,
 .goat-overlay.chat-mode .goat-overlay-main {
   grid-template-columns: 1fr;
 }
-.goat-overlay.chat-mode .goat-avatar-stage { padding: 4px 0; }
+.goat-overlay.chat-mode .goat-avatar-stage {
+  padding: 6px 0;
+  background: transparent;
+  border: none;
+  overflow: visible;
+}
+.goat-overlay.chat-mode .goat-avatar-glow { display: none; }
 .goat-overlay.chat-mode .argus-avatar {
   width: 116px !important;
   height: 116px !important;
+  filter: drop-shadow(0 8px 20px rgba(0, 0, 0, 0.55));
 }
 .goat-overlay.chat-mode .goat-waveform-bar {
   padding: 6px 12px;
@@ -959,11 +977,21 @@ canvas,
 }
 .goat-overlay.chat-mode .goat-suggest-chip { font-size: 11px; padding: 6px 10px; }
 .goat-overlay.chat-mode .goat-transcription {
-  max-height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none;
   width: 100%;
   font-size: 13px;
   padding: 10px 14px;
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 212, 255, 0.35) transparent;
+}
+.goat-overlay.chat-mode .goat-transcription::-webkit-scrollbar { width: 6px; }
+.goat-overlay.chat-mode .goat-transcription::-webkit-scrollbar-track { background: transparent; }
+.goat-overlay.chat-mode .goat-transcription::-webkit-scrollbar-thumb {
+  background: rgba(0, 212, 255, 0.3);
+  border-radius: 3px;
 }
 .goat-overlay.chat-mode .goat-input-bar { padding: 8px 10px; }
 .goat-overlay.chat-mode .goat-input-mic,
@@ -1717,18 +1745,79 @@ canvas,
   background: transparent;
 }
 
+/* ── True chat bubbles ───────────────────────────────────────────────────
+   User → cyan-tinted bubble on the right.
+   ARGUS → dark-grey bubble on the left.
+   The old "YOU / ARGUS" label pills are hidden (display:none below) — we
+   convey speaker via alignment + colour instead. */
 .goat-trans-line {
   display: flex;
-  gap: 10px;
-  align-items: flex-start;
+  align-items: flex-end;
+  gap: 0;
   opacity: 1;
+  margin-bottom: 8px;
   transition: opacity 0.5s ease;
-  padding: 6px 12px;
-  border-radius: 12px;
-  background: rgba(255, 255, 255, 0.04);
-  margin-bottom: 4px;
+  max-width: 100%;
 }
 .goat-trans-line:last-child { margin-bottom: 0; }
+.goat-trans-line .goat-trans-who { display: none; }
+.goat-trans-line .goat-trans-text {
+  max-width: 80%;
+  padding: 10px 14px;
+  border-radius: 14px;
+  font-size: 13px;
+  line-height: 1.45;
+  word-wrap: break-word;
+}
+.goat-trans-line:has(.goat-trans-who-user) {
+  justify-content: flex-end;
+}
+.goat-trans-line:has(.goat-trans-who-user) .goat-trans-text {
+  background: linear-gradient(160deg, rgba(0, 212, 255, 0.22) 0%, rgba(0, 212, 255, 0.14) 100%);
+  color: #fff;
+  border: 1px solid rgba(0, 212, 255, 0.32);
+  border-bottom-right-radius: 4px;
+}
+.goat-trans-line:has(.goat-trans-who-argus) {
+  justify-content: flex-start;
+}
+.goat-trans-line:has(.goat-trans-who-argus) .goat-trans-text {
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom-left-radius: 4px;
+}
+
+/* ── "ARGUS is speaking…" presence line ──────────────────────────────── */
+.goat-presence {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  align-self: flex-start;
+  padding: 4px 10px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.55);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  max-width: max-content;
+  margin: 0 4px;
+}
+.goat-presence-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.4);
+  flex-shrink: 0;
+}
+.goat-presence[data-state="speaking"]  .goat-presence-dot { background: #58e6c8; box-shadow: 0 0 8px #58e6c8; animation: goat-pulse 0.9s ease-in-out infinite; }
+.goat-presence[data-state="listening"] .goat-presence-dot { background: #00d4ff; box-shadow: 0 0 8px #00d4ff; animation: goat-pulse 1.6s ease-in-out infinite; }
+.goat-presence[data-state="thinking"]  .goat-presence-dot { background: #ffcc00; box-shadow: 0 0 6px #ffcc00; animation: goat-pulse 1.2s ease-in-out infinite; }
+.goat-presence[data-state="error"]     .goat-presence-dot { background: #ff6b8a; box-shadow: 0 0 6px #ff6b8a; }
+.goat-presence[data-state="speaking"]  { color: #58e6c8; }
+.goat-presence[data-state="listening"] { color: #00d4ff; }
+.goat-presence[data-state="thinking"]  { color: #ffcc00; }
+.goat-presence[data-state="error"]     { color: #ff6b8a; }
 
 .goat-trans-line.fading {
   opacity: 0.3;
@@ -1785,6 +1874,72 @@ canvas,
   animation: goat-flash 1.6s ease-out;
   position: relative;
   z-index: 5;
+}
+
+/* ─── Spotlight mode ─────────────────────────────────────────────────────
+   When ARGUS calls spotlightPanel(id), the body gets the active class which
+   drops a dimmed backdrop over everything except the spotlighted panel,
+   which floats above with a glowing cyan border. */
+body.goat-spotlight-active::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  /* No blur — keeps the dashboard readable underneath. The dimming alone
+     plus the cyan glow on the target is enough to draw the eye. */
+  z-index: 9990;
+  pointer-events: none;
+  animation: goat-fade-in 0.28s ease-out;
+}
+@keyframes goat-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+body.goat-spotlight-active .goat-spotlight {
+  position: relative;
+  z-index: 9991;
+  border-radius: 12px;
+  animation: goat-spotlight-pulse 1.4s ease-in-out infinite;
+}
+@keyframes goat-spotlight-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px rgba(0, 212, 255, 0.6), 0 0 0 8px rgba(0, 212, 255, 0.18), 0 0 60px rgba(0, 212, 255, 0.5); }
+  50%      { box-shadow: 0 0 0 3px rgba(0, 212, 255, 1.0), 0 0 0 14px rgba(0, 212, 255, 0.28), 0 0 100px rgba(0, 212, 255, 0.8); }
+}
+
+/* Directional arrow pointer */
+.goat-spotlight-arrow {
+  position: fixed;
+  width: 60px;
+  height: 48px;
+  z-index: 9995;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  animation: goat-arrow-bob 0.9s ease-in-out infinite;
+}
+.goat-spotlight-arrow::before {
+  content: '';
+  width: 0; height: 0;
+  border-style: solid;
+}
+/* Arrow pointing right (panel is to the right of the arrow) */
+.goat-spotlight-arrow[data-dir="right"]::before {
+  border-width: 18px 0 18px 30px;
+  border-color: transparent transparent transparent #00d4ff;
+  filter: drop-shadow(0 0 12px rgba(0, 212, 255, 0.85));
+}
+.goat-spotlight-arrow[data-dir="left"]::before {
+  border-width: 18px 30px 18px 0;
+  border-color: transparent #00d4ff transparent transparent;
+  filter: drop-shadow(0 0 12px rgba(0, 212, 255, 0.85));
+}
+@keyframes goat-arrow-bob {
+  0%, 100% { transform: translateX(0); }
+  50%      { transform: translateX(-10px); }
+}
+.goat-spotlight-arrow[data-dir="left"] { animation-name: goat-arrow-bob-left; }
+@keyframes goat-arrow-bob-left {
+  0%, 100% { transform: translateX(0); }
+  50%      { transform: translateX(10px); }
 }
 
 /* Local-mode notifications panel */

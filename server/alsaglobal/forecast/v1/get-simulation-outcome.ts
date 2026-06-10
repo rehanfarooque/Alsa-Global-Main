@@ -134,7 +134,12 @@ export const getSimulationOutcome: ForecastServiceHandler['getSimulationOutcome'
       : '';
     return outcomeToResponse(pointer, note);
   } catch (err) {
-    console.warn('[getSimulationOutcome] Redis error:', err instanceof Error ? err.message : String(err));
+    // Self-host typically runs without Upstash Redis configured — silent.
+    // Only surface unexpected Redis errors (network, auth, etc.).
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('not configured')) {
+      console.warn('[getSimulationOutcome] Redis error:', msg);
+    }
     markNoCacheResponse(ctx.request);
     return { ...NOT_FOUND, error: 'redis_unavailable' };
   }

@@ -32,18 +32,31 @@ export async function listMarketQuotes(
 
   const finnhubKey = process.env.FINNHUB_API_KEY;
 
+  // Per-symbol wall-clock cap. The cascade inside fetchQuote can chain up to
+  // 5 fallback sources; each is bounded by FALLBACK_TIMEOUT_MS (3.5s). Even
+  // so, three fallbacks * 3.5s = 10.5s for one stubborn symbol could stall
+  // the whole batch. Cap each symbol at 5s — if no source can answer in 5s,
+  // return null and let the client show "—" for that one rather than block
+  // the other 7 symbols' results.
+  const PER_SYMBOL_BUDGET_MS = 5_000;
+  const withDeadline = <T>(p: Promise<T>, ms: number): Promise<T | null> => {
+    return new Promise<T | null>((resolve) => {
+      const t = setTimeout(() => resolve(null), ms);
+      p.then((v) => { clearTimeout(t); resolve(v); }).catch(() => { clearTimeout(t); resolve(null); });
+    });
+  };
+
   const results = await Promise.allSettled(
     symbolsToFetch.map(async (sym) => {
-      // Yahoo is primary (covers everything)
-      const yq = await fetchQuote(sym);
-      if (yq) return { sym, ...yq };
-
-      // Finnhub backup for US stocks only
-      if (finnhubKey && isUsStock(sym)) {
-        const fh = await fetchFinnhubQuote(sym, finnhubKey);
-        if (fh) return { sym, price: fh.price, change: fh.changePercent, sparkline: [] as number[] };
-      }
-      return null;
+      return withDeadline((async () => {
+        const yq = await fetchQuote(sym);
+        if (yq) return { sym, ...yq };
+        if (finnhubKey && isUsStock(sym)) {
+          const fh = await fetchFinnhubQuote(sym, finnhubKey);
+          if (fh) return { sym, price: fh.price, change: fh.changePercent, sparkline: [] as number[] };
+        }
+        return null;
+      })(), PER_SYMBOL_BUDGET_MS);
     }),
   );
 

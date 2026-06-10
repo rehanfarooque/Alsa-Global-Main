@@ -22,6 +22,48 @@ const DEFAULT_VOICE = 'Aoede';
 
 let activeOverlay: GoatOverlay | null = null;
 
+/**
+ * Map raw tool names (which the model sees) to friendly status phrases (which
+ * the user sees in the status pill). Keeps the UI feeling natural — the user
+ * shouldn't see camelCase identifiers like "getMarketPrice".
+ */
+const TOOL_LABELS: Record<string, string> = {
+  // Discovery
+  listPanels: 'Looking up panels...',
+  findPanel: 'Finding the right panel...',
+  // Layout
+  openPanel: 'Opening...',
+  openPanels: 'Opening panels...',
+  closePanel: 'Closing...',
+  closeAllPanels: 'Closing everything...',
+  zoomPanel: 'Zooming in...',
+  resizePanel: 'Resizing...',
+  maximizeLatestPanel: 'Expanding...',
+  restoreLatestPanel: 'Restoring...',
+  // Data
+  getMarketPrice: 'Checking the price...',
+  showMarketOverview: 'Pulling the markets...',
+  searchNews: 'Searching headlines...',
+  showCriticalNews: 'Pulling top stories...',
+  getDailyBrief: 'Building your brief...',
+  getMacroSignals: 'Reading macro signals...',
+  // Map + country
+  pointMapToCountry: 'Centering the map...',
+  getCountryNews: 'Pulling country news...',
+  openCountryBrief: 'Opening country brief...',
+  // Creation — kept generic so a slow / failing widget build doesn't leave
+  // "Designing the widget..." stuck on screen for 45s. We treat it like any
+  // other "thinking" operation.
+  buildWidget: 'Working on it...',
+  // System
+  setMapLayer: 'Toggling map layer...',
+  switchTheme: 'Switching theme...',
+};
+
+function friendlyToolLabel(toolName: string): string {
+  return TOOL_LABELS[toolName] ?? 'One moment...';
+}
+
 export function getGoatName(): string {
   try {
     return localStorage.getItem(GOAT_NAME_KEY) || DEFAULT_NAME;
@@ -136,13 +178,16 @@ class GoatOverlay {
         tools: tools.schema,
         onState: (s) => this.setStatus(s, this.statusLabel(s)),
         onUserTranscript: (text, opts) => this.transcription?.append('user', text, { interim: opts?.isInterim }),
-        // ARGUS's speech is delivered via voice. Don't echo the same text into
-        // the transcript box — it just clutters the UI with stuff the user
-        // already heard. Only the user's side appears in the transcript.
-        onModelTranscript: () => {},
+        onModelTranscript: (text) => this.transcription?.append('argus', text),
         onToolCall: async (name, args) => {
-          this.setStatus('thinking', `Calling ${name}...`);
-          return tools.execute(name, args);
+          this.setStatus('thinking', friendlyToolLabel(name));
+          try {
+            return await tools.execute(name, args);
+          } finally {
+            // Drop the tool-specific status so a slow/failing tool doesn't
+            // leave its label stuck while the model is composing the reply.
+            this.setStatus('thinking', 'Thinking...');
+          }
         },
         onUserAudioNode: (node) => {
           this.waveform = waveMod.attachWaveform(waveUserEl, waveAiEl, node, null);
@@ -262,6 +307,11 @@ class GoatOverlay {
 
         <div class="goat-transcription-wrap">
           <div class="goat-transcription" id="goatTranscription" aria-live="polite"></div>
+        </div>
+
+        <div class="goat-presence" id="goatPresence" aria-live="polite">
+          <span class="goat-presence-dot"></span>
+          <span class="goat-presence-text">${escape(name)} is ready</span>
         </div>
 
         <div class="goat-input-bar">
@@ -408,6 +458,21 @@ class GoatOverlay {
       state === 'thinking' ? 'thinking' :
       'idle',
     );
+    // Presence line ("ARGUS is speaking…" / listening / thinking)
+    const presence = this.root?.querySelector<HTMLElement>('#goatPresence');
+    if (presence) {
+      const name = getGoatName();
+      let txt = `${name} is ready`;
+      if (state === 'speaking')      txt = `${name} is speaking…`;
+      else if (state === 'thinking') txt = `${name} is thinking…`;
+      else if (state === 'listening') txt = `${name} is listening`;
+      else if (state === 'connecting') txt = `Connecting…`;
+      else if (state === 'error')    txt = `${name} hit an error`;
+      else if (state === 'closed')   txt = `Disconnected`;
+      const textEl = presence.querySelector<HTMLElement>('.goat-presence-text');
+      if (textEl) textEl.textContent = txt;
+      presence.dataset.state = state;
+    }
   }
 
   private statusLabel(s: SessionState): string {

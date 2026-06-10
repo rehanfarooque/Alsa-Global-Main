@@ -2,7 +2,7 @@
  * Shared helpers, types, and constants for the market service handler RPCs.
  */
 import { CHROME_UA, finnhubGate, yahooGate } from '../../../_shared/constants';
-import { fetchYahooJson } from '../../../_shared/yahoo-session';
+import { fetchYahooJson, invalidateYahooSession, shouldLogYahooNull, isYahooSessionThrottled } from '../../../_shared/yahoo-session';
 import { getRelayBaseUrl, getRelayHeaders } from '../../../_shared/relay';
 export { getRelayBaseUrl, getRelayHeaders };
 import cryptoConfig from '../../../../shared/crypto.json';
@@ -14,7 +14,12 @@ export { parseStringArray } from '../../../_shared/parse-string-array';
 // ========================================================================
 
 export const UPSTREAM_TIMEOUT_MS = 8_000;
-const STOOQ_TIMEOUT_MS = 5_000; // Stooq often slow/blocked from VPS — fail fast
+// Fallback sources (CoinGecko, CoinPaprika, Frankfurter, gold-api, FRED) are
+// each bypassable — when one is slow, the cascade should move on quickly so
+// the user's "show me the markets" doesn't sit waiting for a 8s timeout per
+// failing source. The cascade total is bounded by the longest *fast* path.
+const FALLBACK_TIMEOUT_MS = 3_500;
+const STOOQ_TIMEOUT_MS = 3_500; // Stooq often slow/blocked from VPS — fail fast
 
 export function sanitizeSymbol(raw: string): string {
   return raw.trim().replace(/\s+/g, '').slice(0, 32).toUpperCase();
@@ -26,6 +31,24 @@ export function sanitizeSymbol(raw: string): string {
 // CSV format: Symbol,Date,Time,Open,High,Low,Close,Volume
 // ========================================================================
 
+// Yahoo index ticker → Stooq's name. Stooq uses different ticker names for
+// several major indices, so a 1:1 lowercase pass would 404. Map the ones
+// Yahoo users actually ask for.
+const YAHOO_TO_STOOQ_INDEX: Record<string, string> = {
+  '^GSPC': '^spx',   // S&P 500
+  '^DJI':  '^dji',   // Dow
+  '^IXIC': '^ndq',   // Nasdaq Composite (Stooq uses ^ndq, not ^ixic)
+  '^NDX':  '^ndx',   // Nasdaq 100
+  '^VIX':  '^vix',
+  '^RUT':  '^rut',   // Russell 2000
+  '^FTSE': '^ukx',   // FTSE 100
+  '^GDAXI':'^dax',
+  '^FCHI': '^cac',
+  '^N225': '^nkx',
+  '^HSI':  '^hsi',
+  '^STOXX50E': '^stx5e',
+};
+
 function toStooqSymbol(sym: string): string {
   // Already in stooq form?
   if (/\.(us|f)$/i.test(sym) || /^[A-Z]+USD$/i.test(sym)) return sym.toLowerCase();
@@ -35,8 +58,10 @@ function toStooqSymbol(sym: string): string {
   if (/=F$/i.test(sym)) return sym.toLowerCase().replace('=f', '.f');
   // Yahoo forex EURUSD=X, USDJPY=X → eurusd, usdjpy (strip =X)
   if (/=X$/i.test(sym)) return sym.toLowerCase().replace('=x', '');
-  // Yahoo index ^GSPC → ^spx (stooq uses different names — fall back to as-is)
-  if (sym.startsWith('^')) return sym.toLowerCase();
+  // Indices — try the Yahoo→Stooq alias map first
+  if (sym.startsWith('^')) {
+    return YAHOO_TO_STOOQ_INDEX[sym.toUpperCase()] ?? sym.toLowerCase();
+  }
   // Plain US stock ticker → AAPL.us
   if (/^[A-Z.]{1,5}$/i.test(sym)) return `${sym.toLowerCase()}.us`;
   return sym.toLowerCase();
@@ -124,7 +149,7 @@ async function fetchFrankfurterRates(base: string): Promise<Record<string, numbe
   try {
     const resp = await fetch(`https://api.frankfurter.app/latest?from=${base}`, {
       headers: { 'User-Agent': CHROME_UA },
-      signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+      signal: AbortSignal.timeout(FALLBACK_TIMEOUT_MS),
     });
     if (!resp.ok) return null;
     const json = await resp.json() as { rates: Record<string, number> };
@@ -156,9 +181,256 @@ async function fetchForexQuote(
   return { price, change: 0, sparkline: [] };
 }
 
+// ─── CoinGecko (crypto, free public API, no key, no IP blocks) ────────────
+//
+// Yahoo's anti-bot is aggressive against data-center IPs and Stooq's crypto
+// coverage is spotty, so for self-hosted instances on VPSes we need a third
+// path that just works. CoinGecko's /simple/price endpoint allows 10-30 req/min
+// from any IP without auth — plenty for ARGUS tool calls + ticker refresh.
+
+const COINGECKO_SYMBOL_MAP: Record<string, string> = {
+  'BTC-USD': 'bitcoin',
+  'ETH-USD': 'ethereum',
+  'SOL-USD': 'solana',
+  'BNB-USD': 'binancecoin',
+  'XRP-USD': 'ripple',
+  'ADA-USD': 'cardano',
+  'DOGE-USD': 'dogecoin',
+  'AVAX-USD': 'avalanche-2',
+  'DOT-USD': 'polkadot',
+  'MATIC-USD': 'matic-network',
+  'LINK-USD': 'chainlink',
+  'TRX-USD': 'tron',
+  'LTC-USD': 'litecoin',
+  'BCH-USD': 'bitcoin-cash',
+  'SHIB-USD': 'shiba-inu',
+  'UNI-USD': 'uniswap',
+  'ATOM-USD': 'cosmos',
+  'ETC-USD': 'ethereum-classic',
+  'XLM-USD': 'stellar',
+  'NEAR-USD': 'near',
+  'APT-USD': 'aptos',
+  'ARB-USD': 'arbitrum',
+  'OP-USD': 'optimism',
+  'INJ-USD': 'injective-protocol',
+  'SUI-USD': 'sui',
+  'TON-USD': 'the-open-network',
+  'FIL-USD': 'filecoin',
+  'ICP-USD': 'internet-computer',
+  'HBAR-USD': 'hedera-hashgraph',
+  'XMR-USD': 'monero',
+  'USDT-USD': 'tether',
+  'USDC-USD': 'usd-coin',
+};
+
+const _coingeckoCache = new Map<string, { result: { price: number; change: number; sparkline: number[] } | null; ts: number }>();
+const COINGECKO_CACHE_TTL_MS = 60_000;
+
+// Coingecko backs off the whole process for 5 min when it 429s, so we don't
+// keep hitting an API that's actively blocking us. Same pattern as Yahoo.
+let _coingecko429Until = 0;
+
+async function fetchCoinGeckoQuote(
+  symbol: string,
+): Promise<{ price: number; change: number; sparkline: number[] } | null> {
+  const cgId = COINGECKO_SYMBOL_MAP[symbol.toUpperCase()];
+  if (!cgId) return null;
+  const now = Date.now();
+  const hit = _coingeckoCache.get(cgId);
+  if (hit && now - hit.ts < COINGECKO_CACHE_TTL_MS) return hit.result;
+
+  // 1. Try CoinGecko unless we're currently being throttled by it
+  if (now >= _coingecko429Until) {
+    try {
+      const url = `https://api.coingecko.com/api/v3/simple/price?ids=${cgId}&vs_currencies=usd&include_24hr_change=true`;
+      const resp = await fetch(url, {
+        headers: { 'User-Agent': CHROME_UA, Accept: 'application/json' },
+        signal: AbortSignal.timeout(FALLBACK_TIMEOUT_MS),
+      });
+      if (resp.status === 429) {
+        _coingecko429Until = Date.now() + 5 * 60_000;
+      } else if (resp.ok) {
+        const json = await resp.json() as Record<string, { usd?: number; usd_24h_change?: number }>;
+        const row = json[cgId];
+        if (row && typeof row.usd === 'number') {
+          const result = {
+            price: row.usd,
+            change: typeof row.usd_24h_change === 'number' ? row.usd_24h_change : 0,
+            sparkline: [],
+          };
+          _coingeckoCache.set(cgId, { result, ts: now });
+          return result;
+        }
+      }
+    } catch { /* fall through to CoinPaprika */ }
+  }
+
+  // 2. CoinPaprika fallback — different rate-limit pool, much higher cap.
+  // Uses the shared CoinGecko→Paprika ID map that the bulk market endpoints
+  // already use, so single-symbol crypto calls resolve too.
+  const paprikaId = COINPAPRIKA_ID_MAP[cgId];
+  if (paprikaId) {
+    try {
+      const all = await fetchCoinPaprikaAllTickers();
+      const t = all.find((x) => x.id === paprikaId);
+      if (t && t.quotes?.USD?.price) {
+        const result = {
+          price: t.quotes.USD.price,
+          change: t.quotes.USD.percent_change_24h ?? 0,
+          sparkline: [],
+        };
+        _coingeckoCache.set(cgId, { result, ts: now });
+        return result;
+      }
+    } catch { /* CoinPaprika also down — fall through */ }
+  }
+
+  _coingeckoCache.set(cgId, { result: null, ts: now });
+  return null;
+}
+
+function isCryptoSymbol(symbol: string): boolean {
+  return /-USD$/i.test(symbol) || /-USDT$/i.test(symbol);
+}
+
+// ─── FRED fallback ──────────────────────────────────────────────────────────
+// When Yahoo throttles us, indices and major commodities have no good
+// alternative except FRED — which is rock-solid, never rate-limits, and is
+// already configured (FRED_API_KEY in .env). Maps Yahoo's symbols to the
+// equivalent FRED series ID. Add more as needed.
+const YAHOO_TO_FRED_SERIES: Record<string, string> = {
+  '^GSPC':  'SP500',          // S&P 500 close
+  '^IXIC':  'NASDAQCOM',      // Nasdaq Composite close
+  '^DJI':   'DJIA',           // Dow Jones Industrial Average
+  '^VIX':   'VIXCLS',         // CBOE Volatility Index close
+  'CL=F':   'DCOILWTICO',     // WTI crude oil (USD/bbl)
+  'BZ=F':   'DCOILBRENTEU',   // Brent crude (USD/bbl)
+  'NG=F':   'DHHNGSP',        // Henry Hub natural gas spot (USD/MMBtu)
+  'DGS10':  'DGS10',          // 10-yr Treasury (passthrough)
+  // Gold/silver/platinum/palladium use a different (free, no-key) source —
+  // see fetchMetalsQuote() below. FRED no longer hosts daily metal spots.
+};
+
+// ─── Precious metals: gold-api.com + CoinGecko PAXG for 24h change ──────────
+// Both are free public APIs requiring no key. gold-api gives the spot price
+// for XAU/XAG/XPT/XPD; CoinGecko's pax-gold (PAXG) token tracks 1oz gold 1:1
+// so its 24h change is effectively gold's 24h change. For silver/platinum/
+// palladium we fall back to in-memory delta tracking when CoinGecko doesn't
+// have an equivalent tokenized version.
+
+const YAHOO_TO_METAL: Record<string, 'XAU' | 'XAG' | 'XPT' | 'XPD'> = {
+  'GC=F':  'XAU',  // Gold
+  'SI=F':  'XAG',  // Silver
+  'PL=F':  'XPT',  // Platinum
+  'PA=F':  'XPD',  // Palladium
+};
+
+const METAL_CG_PROXY: Record<string, string> = {
+  // CoinGecko token that tracks each metal 1:1 for 24h change calculation
+  XAU: 'pax-gold',
+  XAG: 'kinesis-silver',
+};
+
+const _metalsCache = new Map<string, { result: { price: number; change: number; sparkline: number[] } | null; ts: number }>();
+const METALS_CACHE_TTL_MS = 90 * 1000;
+
+async function fetchMetalsQuote(
+  symbol: string,
+): Promise<{ price: number; change: number; sparkline: number[] } | null> {
+  const metal = YAHOO_TO_METAL[symbol.toUpperCase()];
+  if (!metal) return null;
+
+  const now = Date.now();
+  const hit = _metalsCache.get(metal);
+  if (hit && now - hit.ts < METALS_CACHE_TTL_MS) return hit.result;
+
+  // 1. Spot price from gold-api.com (no key)
+  let price = NaN;
+  try {
+    const r = await fetch(`https://api.gold-api.com/price/${metal}`, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(FALLBACK_TIMEOUT_MS),
+    });
+    if (r.ok) {
+      const j = await r.json() as { price?: number };
+      if (typeof j.price === 'number' && Number.isFinite(j.price)) price = j.price;
+    }
+  } catch { /* fall through */ }
+
+  if (!Number.isFinite(price)) {
+    _metalsCache.set(metal, { result: null, ts: now });
+    return null;
+  }
+
+  // 2. 24h change from a CoinGecko tokenized proxy (PAXG for gold, etc.).
+  // If no proxy is mapped, derive change from the prior cached price.
+  let change = 0;
+  const proxyId = METAL_CG_PROXY[metal];
+  if (proxyId) {
+    try {
+      const r = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${proxyId}&vs_currencies=usd&include_24hr_change=true`, {
+        headers: { Accept: 'application/json', 'User-Agent': CHROME_UA },
+        signal: AbortSignal.timeout(FALLBACK_TIMEOUT_MS),
+      });
+      if (r.ok) {
+        const j = await r.json() as Record<string, { usd_24h_change?: number }>;
+        const c = j[proxyId]?.usd_24h_change;
+        if (typeof c === 'number' && Number.isFinite(c)) change = c;
+      }
+    } catch { /* keep change at 0 */ }
+  } else if (hit?.result && hit.result.price > 0) {
+    // No 24h source for platinum/palladium — derive change from previous tick
+    change = ((price - hit.result.price) / hit.result.price) * 100;
+  }
+
+  const result = { price, change, sparkline: [] };
+  _metalsCache.set(metal, { result, ts: now });
+  return result;
+}
+
+const _fredCache = new Map<string, { result: { price: number; change: number; sparkline: number[] } | null; ts: number }>();
+const FRED_CACHE_TTL_MS = 10 * 60 * 1000; // FRED updates daily; 10min cache is plenty
+
+async function fetchFredQuote(
+  symbol: string,
+): Promise<{ price: number; change: number; sparkline: number[] } | null> {
+  const apiKey = process.env.FRED_API_KEY;
+  if (!apiKey) return null;
+  const seriesId = YAHOO_TO_FRED_SERIES[symbol.toUpperCase()];
+  if (!seriesId) return null;
+
+  const now = Date.now();
+  const hit = _fredCache.get(symbol);
+  if (hit && now - hit.ts < FRED_CACHE_TTL_MS) return hit.result;
+
+  try {
+    const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}` +
+                `&api_key=${apiKey}&file_type=json&limit=8&sort_order=desc`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(FALLBACK_TIMEOUT_MS) });
+    if (!resp.ok) { _fredCache.set(symbol, { result: null, ts: now }); return null; }
+    const json = await resp.json() as { observations?: Array<{ date: string; value: string }> };
+    const obs = (json.observations ?? [])
+      .map((o) => parseFloat(o.value))
+      .filter((v) => Number.isFinite(v));
+    if (obs.length < 2) { _fredCache.set(symbol, { result: null, ts: now }); return null; }
+    const price = obs[0]!;
+    const prev = obs[1]!;
+    const change = prev !== 0 ? ((price - prev) / prev) * 100 : 0;
+    // Sparkline: most recent → oldest in `obs` (sort_order=desc); reverse for chart
+    const sparkline = obs.slice(0, 7).reverse();
+    const result = { price, change, sparkline };
+    _fredCache.set(symbol, { result, ts: now });
+    return result;
+  } catch {
+    _fredCache.set(symbol, { result: null, ts: now });
+    return null;
+  }
+}
+
 /**
  * Unified quote fetcher: Yahoo is primary (covers everything).
  *  - Yahoo first (cached, cookie-authed, with 429 backoff)
+ *  - crypto (XXX-USD) → CoinGecko fallback if Yahoo fails (free, no key)
  *  - forex (=X) → Frankfurter fallback if Yahoo fails
  *  - others → Stooq fallback if Yahoo fails
  */
@@ -169,11 +441,29 @@ export async function fetchQuote(
   const yahoo = await fetchYahooQuote(symbol);
   if (yahoo) return yahoo;
 
+  // Crypto fallback: CoinGecko (free, public, no rate-limit issues from VPS)
+  if (isCryptoSymbol(symbol)) {
+    const cg = await fetchCoinGeckoQuote(symbol);
+    if (cg) return cg;
+  }
+
   // Forex fallback: Frankfurter (ECB rates)
   if (/=X$/i.test(symbol)) {
     const fx = await fetchForexQuote(symbol);
     if (fx) return fx;
   }
+
+  // Precious metals fallback: GC=F gold, SI=F silver, PL=F platinum, PA=F
+  // palladium → gold-api.com for spot + CoinGecko PAXG for 24h change.
+  // Both free, no key, never rate-limited from our network.
+  const metals = await fetchMetalsQuote(symbol);
+  if (metals) return metals;
+
+  // FRED fallback for major indices (^GSPC, ^IXIC, ^DJI, ^VIX) and key
+  // commodities (CL=F WTI, BZ=F Brent, NG=F natural gas). FRED never
+  // rate-limits, so this is what saves us when Yahoo's getcrumb is throttled.
+  const fred = await fetchFredQuote(symbol);
+  if (fred) return fred;
 
   // Stooq as last resort
   return fetchStooqQuote(symbol);
@@ -372,20 +662,13 @@ export async function fetchFinnhubQuote(
       headers: { Accept: 'application/json', 'User-Agent': CHROME_UA, 'X-Finnhub-Token': apiKey },
       signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
     });
-    if (!resp.ok) {
-      console.warn(`[Finnhub] ${symbol} HTTP ${resp.status}`);
-      return null;
-    }
-
+    if (!resp.ok) return null;
     const data = await resp.json() as { c: number; d: number; dp: number; h: number; l: number; o: number; pc: number; t: number };
-    if (data.c === 0 && data.h === 0 && data.l === 0) {
-      console.warn(`[Finnhub] ${symbol} returned zeros (market closed or invalid)`);
-      return null;
-    }
-
+    if (data.c === 0 && data.h === 0 && data.l === 0) return null;
     return { symbol, price: data.c, changePercent: data.dp };
-  } catch (err) {
-    console.warn(`[Finnhub] ${symbol} error:`, (err as Error).message);
+  } catch {
+    // Finnhub free tier rate-limits aggressively and times out; cascade
+    // fallback handles the result. Silent to keep dev log readable.
     return null;
   }
 }
@@ -450,6 +733,14 @@ const YAHOO_NEG_TTL_MS = 30 * 1000;         // 30s for failures — retry sooner
  * stocks, crypto, forex, indices, futures, AND international (.NS, .HK, etc.)
  * from any environment without 429-ing.
  */
+// Recent-failure tracker. When too many consecutive `fetchYahooJson` calls
+// return null, the Yahoo session is probably stale (expired cookie, rotated
+// crumb, IP throttled the API for a minute, etc.). Invalidating it forces
+// the next request to re-prime cookies + crumb, which fixes the situation in
+// ~600ms instead of waiting for the 60-min cache TTL.
+let _yahooConsecutiveNulls = 0;
+const _YAHOO_FAIL_THRESHOLD = 3;
+
 export async function fetchYahooQuote(
   symbol: string,
 ): Promise<{ price: number; change: number; sparkline: number[] } | null> {
@@ -460,6 +751,12 @@ export async function fetchYahooQuote(
     if (now - hit.ts < ttl) return hit.result;
   }
 
+  // Fast-path: if Yahoo is currently rate-limiting us (no crumb), skip the
+  // 8-second data-fetch timeout entirely and let the fallback cascade run.
+  // This is the single biggest "ARGUS is thinking forever" fix — without it,
+  // each of 8 symbols in showMarketOverview waits 8s for Yahoo to give up.
+  if (isYahooSessionThrottled()) return null;
+
   await yahooGate();
 
   const data = await fetchYahooJson<YahooChartResponse>(
@@ -469,12 +766,26 @@ export async function fetchYahooQuote(
   if (data) {
     const parsed = parseYahooChartResponse(data);
     if (parsed) {
+      _yahooConsecutiveNulls = 0; // got real data → reset the failure streak
       _yahooCache.set(symbol, { result: parsed, ts: Date.now() });
       return parsed;
     }
     console.warn(`[Yahoo] ${symbol}: payload returned but no regularMarketPrice — symbol may be unknown`);
   } else {
-    console.warn(`[Yahoo] ${symbol}: session/fetch returned null. Restart dev server with NODE_OPTIONS=--max-http-header-size=65536 if you see this on every symbol.`);
+    _yahooConsecutiveNulls++;
+    // Throttled log: at most one "Yahoo returning nulls" line per minute even
+    // if every symbol fails. The session module already announces the 429
+    // throttle event once when it starts.
+    if (_yahooConsecutiveNulls === 1 && shouldLogYahooNull()) {
+      console.warn(`[Yahoo] returning null for ${symbol} (and likely others) — see [yahoo-session] log for the cause`);
+    }
+    if (_yahooConsecutiveNulls >= _YAHOO_FAIL_THRESHOLD) {
+      invalidateYahooSession();
+      for (const [k, v] of _yahooCache) {
+        if (v.result === null) _yahooCache.delete(k);
+      }
+      _yahooConsecutiveNulls = 0;
+    }
   }
 
   // Optional relay fallback (only if WS_RELAY_URL is set in env)
@@ -606,7 +917,7 @@ async function fetchCoinPaprikaAllTickers(): Promise<CoinPaprikaTicker[]> {
   }
   const resp = await fetch('https://api.coinpaprika.com/v1/tickers?quotes=USD', {
     headers: { Accept: 'application/json', 'User-Agent': CHROME_UA },
-    signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS),
+    signal: AbortSignal.timeout(FALLBACK_TIMEOUT_MS),
   });
   if (!resp.ok) throw new Error(`CoinPaprika HTTP ${resp.status}`);
   const data: CoinPaprikaTicker[] = await resp.json();
