@@ -1328,70 +1328,74 @@ export class PanelLayoutManager implements AppModule {
       import('@/components/GivingPanel').then(m => new m.GivingPanel()),
     );
 
-    // Happy variant panels (lazy-loaded — only relevant for happy variant)
-    if (SITE_VARIANT === 'happy') {
-      this.lazyPanel('positive-feed', () =>
-        import('@/components/PositiveNewsFeedPanel').then(m => {
-          const p = new m.PositiveNewsFeedPanel();
-          this.ctx.positivePanel = p;
-          return p;
-        }),
-      );
+    // Happy-variant panels — registered for ALL variants so users can enable
+    // them cross-variant from the panel picker. `lazyPanel` already gates on
+    // `shouldCreatePanel(key)` which checks the per-user panelSettings, so a
+    // panel only actually loads when the user has enabled it. The previous
+    // outer `if (SITE_VARIANT === 'happy')` wrapper meant "Today's Hero",
+    // "Live Counters", "Breakthroughs", etc. were unreachable from Tech /
+    // Finance / Commodity / Energy / Full variants even after enabling them
+    // in the picker.
+    this.lazyPanel('positive-feed', () =>
+      import('@/components/PositiveNewsFeedPanel').then(m => {
+        const p = new m.PositiveNewsFeedPanel();
+        this.ctx.positivePanel = p;
+        return p;
+      }),
+    );
 
-      this.lazyPanel('counters', () =>
-        import('@/components/CountersPanel').then(m => {
-          const p = new m.CountersPanel();
-          p.startTicking();
-          this.ctx.countersPanel = p;
-          return p;
-        }),
-      );
+    this.lazyPanel('counters', () =>
+      import('@/components/CountersPanel').then(m => {
+        const p = new m.CountersPanel();
+        p.startTicking();
+        this.ctx.countersPanel = p;
+        return p;
+      }),
+    );
 
-      this.lazyPanel('progress', () =>
-        import('@/components/ProgressChartsPanel').then(m => {
-          const p = new m.ProgressChartsPanel();
-          this.ctx.progressPanel = p;
-          return p;
-        }),
-      );
+    this.lazyPanel('progress', () =>
+      import('@/components/ProgressChartsPanel').then(m => {
+        const p = new m.ProgressChartsPanel();
+        this.ctx.progressPanel = p;
+        return p;
+      }),
+    );
 
-      this.lazyPanel('breakthroughs', () =>
-        import('@/components/BreakthroughsTickerPanel').then(m => {
-          const p = new m.BreakthroughsTickerPanel();
-          this.ctx.breakthroughsPanel = p;
-          return p;
-        }),
-      );
+    this.lazyPanel('breakthroughs', () =>
+      import('@/components/BreakthroughsTickerPanel').then(m => {
+        const p = new m.BreakthroughsTickerPanel();
+        this.ctx.breakthroughsPanel = p;
+        return p;
+      }),
+    );
 
-      this.lazyPanel('spotlight', () =>
-        import('@/components/HeroSpotlightPanel').then(m => {
-          const p = new m.HeroSpotlightPanel();
-          p.onLocationRequest = (lat: number, lon: number) => {
-            this.ctx.map?.setCenter(lat, lon, 4);
-            this.ctx.map?.flashLocation(lat, lon, 3000);
-          };
-          this.ctx.heroPanel = p;
-          return p;
-        }),
-      );
+    this.lazyPanel('spotlight', () =>
+      import('@/components/HeroSpotlightPanel').then(m => {
+        const p = new m.HeroSpotlightPanel();
+        p.onLocationRequest = (lat: number, lon: number) => {
+          this.ctx.map?.setCenter(lat, lon, 4);
+          this.ctx.map?.flashLocation(lat, lon, 3000);
+        };
+        this.ctx.heroPanel = p;
+        return p;
+      }),
+    );
 
-      this.lazyPanel('digest', () =>
-        import('@/components/GoodThingsDigestPanel').then(m => {
-          const p = new m.GoodThingsDigestPanel();
-          this.ctx.digestPanel = p;
-          return p;
-        }),
-      );
+    this.lazyPanel('digest', () =>
+      import('@/components/GoodThingsDigestPanel').then(m => {
+        const p = new m.GoodThingsDigestPanel();
+        this.ctx.digestPanel = p;
+        return p;
+      }),
+    );
 
-      this.lazyPanel('species', () =>
-        import('@/components/SpeciesComebackPanel').then(m => {
-          const p = new m.SpeciesComebackPanel();
-          this.ctx.speciesPanel = p;
-          return p;
-        }),
-      );
-
-    }
+    this.lazyPanel('species', () =>
+      import('@/components/SpeciesComebackPanel').then(m => {
+        const p = new m.SpeciesComebackPanel();
+        this.ctx.speciesPanel = p;
+        return p;
+      }),
+    );
 
     // Renewable Energy is shared by happy and energy variants.
     if (this.shouldCreatePanel('renewable')) {

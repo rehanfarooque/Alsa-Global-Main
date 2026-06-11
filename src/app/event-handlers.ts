@@ -38,7 +38,6 @@ import {
   INTEL_SOURCES,
 } from '@/config';
 import { resolveNewsCategories, enabledNewsCategoryKeys } from '@/config/feed-resolution';
-import { VARIANT_META } from '@/config/variant-meta';
 import { isDesktopRuntime } from '@/services/runtime';
 import {
   saveSnapshot,
@@ -922,26 +921,22 @@ export class EventHandlerManager implements AppModule {
 
   private async navigateToVariant(
     variant: string,
-    options: { href?: string; isLocalDev: boolean },
+    _options: { href?: string; isLocalDev: boolean },
   ): Promise<void> {
     trackVariantSwitch(SITE_VARIANT, variant);
     await this.exitFullscreenForNavigation();
 
-    if (this.ctx.isDesktopApp || options.isLocalDev) {
-      localStorage.setItem('alsaglobal-variant', variant);
-      window.location.reload();
-      return;
+    // AlsaGlobal runs as a single deployment per origin (see panel-layout.ts
+    // header comment + the cross-domain hrefs that intentionally resolve to
+    // '#'). All variants live at the same hostname and are selected via
+    // localStorage. Persist the choice and reload.
+    try { localStorage.setItem('alsaglobal-variant', variant); } catch { /* ignore */ }
+    // Clear the URL hash so we don't reload with `#` left behind from the
+    // anchor click.
+    if (window.location.hash) {
+      window.history.replaceState({}, '', window.location.pathname + window.location.search);
     }
-
-    const target = options.href || VARIANT_META[variant]?.url;
-    if (!target) return;
-    try {
-      const parsed = new URL(target, window.location.href);
-      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return;
-      window.location.href = parsed.toString();
-    } catch {
-      return;
-    }
+    window.location.reload();
   }
 
   toggleFullscreen(): void {

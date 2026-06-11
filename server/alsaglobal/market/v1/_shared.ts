@@ -223,6 +223,23 @@ const COINGECKO_SYMBOL_MAP: Record<string, string> = {
   'USDC-USD': 'usd-coin',
 };
 
+// Binance public ticker — used as a 3rd-tier crypto fallback when both
+// CoinGecko (429) and CoinPaprika (rare downtime) fail. No auth required and
+// the rate limit is several orders of magnitude higher than CoinGecko's free
+// tier, so it survives our ticker tape + ARGUS tool calls without throttling.
+const BINANCE_PAIR_MAP: Record<string, string> = {
+  'BTC-USD': 'BTCUSDT', 'ETH-USD': 'ETHUSDT', 'SOL-USD': 'SOLUSDT',
+  'BNB-USD': 'BNBUSDT', 'XRP-USD': 'XRPUSDT', 'ADA-USD': 'ADAUSDT',
+  'DOGE-USD': 'DOGEUSDT', 'AVAX-USD': 'AVAXUSDT', 'DOT-USD': 'DOTUSDT',
+  'MATIC-USD': 'MATICUSDT', 'LINK-USD': 'LINKUSDT', 'TRX-USD': 'TRXUSDT',
+  'LTC-USD': 'LTCUSDT', 'BCH-USD': 'BCHUSDT', 'SHIB-USD': 'SHIBUSDT',
+  'UNI-USD': 'UNIUSDT', 'ATOM-USD': 'ATOMUSDT', 'ETC-USD': 'ETCUSDT',
+  'XLM-USD': 'XLMUSDT', 'NEAR-USD': 'NEARUSDT', 'APT-USD': 'APTUSDT',
+  'ARB-USD': 'ARBUSDT', 'OP-USD': 'OPUSDT', 'INJ-USD': 'INJUSDT',
+  'SUI-USD': 'SUIUSDT', 'TON-USD': 'TONUSDT', 'FIL-USD': 'FILUSDT',
+  'ICP-USD': 'ICPUSDT', 'HBAR-USD': 'HBARUSDT', 'XMR-USD': 'XMRUSDT',
+};
+
 const _coingeckoCache = new Map<string, { result: { price: number; change: number; sparkline: number[] } | null; ts: number }>();
 const COINGECKO_CACHE_TTL_MS = 60_000;
 
@@ -283,6 +300,34 @@ async function fetchCoinGeckoQuote(
         return result;
       }
     } catch { /* CoinPaprika also down — fall through */ }
+  }
+
+  // 3. Binance public ticker — no auth, much higher rate limit than CoinGecko.
+  // Used when both CoinGecko (429) and CoinPaprika (transient) are dead.
+  // Covers the top-30 USD pairs which is what ARGUS / panels actually ask for.
+  const binancePair = BINANCE_PAIR_MAP[symbol.toUpperCase()];
+  if (binancePair) {
+    try {
+      const url = `https://api.binance.com/api/v3/ticker/24hr?symbol=${binancePair}`;
+      const resp = await fetch(url, {
+        headers: { 'User-Agent': CHROME_UA, Accept: 'application/json' },
+        signal: AbortSignal.timeout(FALLBACK_TIMEOUT_MS),
+      });
+      if (resp.ok) {
+        const json = await resp.json() as { lastPrice?: string; priceChangePercent?: string };
+        const price = parseFloat(json.lastPrice ?? '');
+        const change = parseFloat(json.priceChangePercent ?? '0');
+        if (isFinite(price) && price > 0) {
+          const result = {
+            price,
+            change: isFinite(change) ? change : 0,
+            sparkline: [],
+          };
+          _coingeckoCache.set(cgId, { result, ts: now });
+          return result;
+        }
+      }
+    } catch { /* Binance failed — give up */ }
   }
 
   _coingeckoCache.set(cgId, { result: null, ts: now });

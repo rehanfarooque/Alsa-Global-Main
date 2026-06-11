@@ -507,12 +507,22 @@ export class App {
     // Panels that must survive variant switches: desktop config, user-created widgets, MCP panels.
     const isDynamicPanel = (k: string) => k === 'runtime-config' || k.startsWith('cw-') || k.startsWith('mcp-');
 
-    // Check if variant changed - reset all settings to variant defaults
-    const storedVariant = localStorage.getItem('alsaglobal-variant');
+    // Detect a variant switch and re-seed the new variant's defaults.
+    //
+    // We compare SITE_VARIANT against a *separate* "applied" marker, not
+    // against `alsaglobal-variant`. The header click handler writes the new
+    // variant to `alsaglobal-variant` BEFORE reloading so that variant.ts
+    // picks it up on the next page load — which means by the time we get
+    // here, `alsaglobal-variant === SITE_VARIANT` even on a fresh switch.
+    // The `alsaglobal-variant-applied` marker is written ONLY after a seed
+    // completes, so it lags `alsaglobal-variant` across a switch and gives
+    // us a reliable "did we already seed this variant's defaults?" signal.
+    const appliedVariant = localStorage.getItem('alsaglobal-variant-applied');
     const currentVariant = SITE_VARIANT;
-    console.log(`[App] Variant check: stored="${storedVariant}", current="${currentVariant}"`);
-    if (storedVariant !== currentVariant) {
-      // Variant changed — seed new variant's panels, disable panels not in the new variant
+    console.log(`[App] Variant check: applied="${appliedVariant}", current="${currentVariant}"`);
+    if (appliedVariant !== currentVariant) {
+      // Variant changed (or first run) — seed new variant's panels + map layers,
+      // disable panels that don't belong to the new variant.
       console.log('[App] Variant changed - seeding new defaults, disabling cross-variant panels');
       localStorage.setItem('alsaglobal-variant', currentVariant);
       // Reset map layers for the new variant (map layers are not user-personalized the same way)
@@ -533,6 +543,26 @@ export class App {
           panelSettings[key] = { ...getEffectivePanelConfig(key, currentVariant) };
         }
       }
+      // Merge in every other panel from ALL_PANELS so cross-variant panels
+      // stay registered (disabled) and visible in the picker. Without this
+      // the user loses access to e.g. happy-variant panels after switching
+      // away — the picker only shows the keys present in panelSettings.
+      for (const key of Object.keys(ALL_PANELS)) {
+        if (!(key in panelSettings)) {
+          const config = getEffectivePanelConfig(key, currentVariant);
+          panelSettings[key] = { ...config, enabled: newVariantKeys.has(key) && config.enabled };
+        }
+      }
+      // Persist the seeded values so subsequent reloads keep them and any
+      // future user toggles stack on top of the right baseline.
+      saveToStorage(STORAGE_KEYS.mapLayers, mapLayers);
+      saveToStorage(STORAGE_KEYS.panels, panelSettings);
+      // Mark this variant as applied so subsequent reloads skip the seed.
+      try { localStorage.setItem('alsaglobal-variant-applied', currentVariant); } catch { /* ignore */ }
+      // Pre-mark the cross-variant picker exposure migration as done — we
+      // just performed the equivalent merge so the else-branch migration
+      // doesn't need to run again.
+      try { localStorage.setItem('alsaglobal-unified-panels-v1', 'done'); } catch { /* ignore */ }
     } else {
       mapLayers = normalizeExclusiveChoropleths(
         sanitizeLayersForVariant(
