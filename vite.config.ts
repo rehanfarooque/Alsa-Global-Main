@@ -244,14 +244,32 @@ function aaiiBootstrapPlugin(): Plugin {
   return {
     name: 'aaii-bootstrap',
     configureServer(server) {
-      server.middlewares.use((req, res, next) => {
+      server.middlewares.use(async (req, res, next) => {
         if (!req.url?.startsWith('/api/bootstrap')) return next();
         const url = new URL(req.url, 'http://localhost');
-        if (!url.searchParams.get('keys')?.includes('aaiiSentiment')) return next();
+        const keys = url.searchParams.get('keys') ?? '';
+
+        // Live-computable bootstrap keys for self-host (no Redis seed):
+        // each fetcher hits a free public API and caches in-process.
+        const data: Record<string, unknown> = {};
+        if (keys.includes('aaiiSentiment')) {
+          data.aaiiSentiment = buildAaiiData();
+        }
+        if (keys.includes('wsbTickers')) {
+          try {
+            const { fetchWsbTickersLive } = await import('./server/_shared/wsb-live');
+            const tickers = await fetchWsbTickersLive();
+            if (tickers.length > 0) {
+              data.wsbTickers = { tickers, seededAt: new Date().toISOString(), source: 'apewisdom.io (live)' };
+            }
+          } catch { /* leave key absent — panel keeps its retry loop */ }
+        }
+
+        if (Object.keys(data).length === 0) return next();
         res.statusCode = 200;
         res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Cache-Control', 'private, max-age=21600');
-        res.end(JSON.stringify({ data: { aaiiSentiment: buildAaiiData() } }));
+        res.setHeader('Cache-Control', 'private, max-age=600');
+        res.end(JSON.stringify({ data }));
       });
     },
   };

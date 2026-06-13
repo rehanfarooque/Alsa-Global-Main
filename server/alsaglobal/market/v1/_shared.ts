@@ -472,12 +472,20 @@ async function fetchFredQuote(
   }
 }
 
+/** Plain US stock / ETF ticker (AAPL, XLK, SPY) — Finnhub covers these. */
+function isUsStockOrEtf(symbol: string): boolean {
+  return /^[A-Z][A-Z.\-]{0,5}$/.test(symbol) && !symbol.includes('=') && !symbol.startsWith('^');
+}
+
 /**
  * Unified quote fetcher: Yahoo is primary (covers everything).
  *  - Yahoo first (cached, cookie-authed, with 429 backoff)
  *  - crypto (XXX-USD) → CoinGecko fallback if Yahoo fails (free, no key)
  *  - forex (=X) → Frankfurter fallback if Yahoo fails
- *  - others → Stooq fallback if Yahoo fails
+ *  - precious metals (GC=F …) → gold-api fallback
+ *  - indices / oil (^GSPC, CL=F …) → FRED fallback
+ *  - US stocks / ETFs (AAPL, XLK …) → Finnhub fallback if key is set
+ *  - everything else → Stooq fallback
  */
 export async function fetchQuote(
   symbol: string,
@@ -509,6 +517,15 @@ export async function fetchQuote(
   // rate-limits, so this is what saves us when Yahoo's getcrumb is throttled.
   const fred = await fetchFredQuote(symbol);
   if (fred) return fred;
+
+  // Finnhub fallback for US stocks / ETFs (AAPL, XLK, SPY, …) — the sector
+  // heatmap, gulf ETFs, and top-movers depend on this when Yahoo is throttled.
+  // Free tier covers US equities/ETFs; needs FINNHUB_API_KEY.
+  const finnhubKey = process.env.FINNHUB_API_KEY;
+  if (finnhubKey && isUsStockOrEtf(symbol)) {
+    const fh = await fetchFinnhubQuote(symbol, finnhubKey);
+    if (fh) return { price: fh.price, change: fh.changePercent, sparkline: [] };
+  }
 
   // Stooq as last resort
   return fetchStooqQuote(symbol);

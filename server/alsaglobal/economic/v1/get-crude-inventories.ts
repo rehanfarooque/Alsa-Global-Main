@@ -10,6 +10,7 @@ import type {
 } from '../../../../src/generated/server/alsaglobal/economic/v1/service_server';
 
 import { getCachedJson } from '../../../_shared/redis';
+import { fetchCrudeInventoriesDirect } from './_eia-direct';
 
 const SEED_CACHE_KEY = 'economic:crude-inventories:v1';
 
@@ -17,13 +18,18 @@ export async function getCrudeInventories(
   _ctx: ServerContext,
   _req: GetCrudeInventoriesRequest,
 ): Promise<GetCrudeInventoriesResponse> {
+  // 1. Seeded Redis cache (Railway path)
   try {
-    // true = raw key: seed scripts write without Vercel env prefix
     const result = await getCachedJson(SEED_CACHE_KEY, true) as GetCrudeInventoriesResponse | null;
-    if (!result?.weeks?.length) return { weeks: [], latestPeriod: '' };
-    return result;
+    if (result?.weeks?.length) return result;
+  } catch {
+    // fall through to direct
+  }
+  // 2. Direct EIA fetch (self-host path — EIA_API_KEY required)
+  try {
+    return await fetchCrudeInventoriesDirect();
   } catch (err) {
-    console.error('[getCrudeInventories] Redis read failed:', err);
+    console.warn('[getCrudeInventories] EIA direct fetch failed:', (err as Error).message);
     return { weeks: [], latestPeriod: '' };
   }
 }

@@ -5,6 +5,7 @@ import type {
 } from '../../../../src/generated/server/alsaglobal/economic/v1/service_server';
 
 import { getCachedJson } from '../../../_shared/redis';
+import { fetchCrudeInventoriesDirect, fetchNatGasStorageDirect } from './_eia-direct';
 
 const CRUDE_KEY = 'economic:crude-inventories:v1';
 const SPR_KEY = 'economic:spr:v1';
@@ -77,11 +78,18 @@ export async function getOilInventories(
       getCachedJson(REFINERY_KEY, true) as Promise<RefineryRaw | null>,
     ]);
 
-    const crudeWeeks = crudeRaw?.weeks?.map((w) => ({
+    let crudeWeeks = crudeRaw?.weeks?.map((w) => ({
       period: w.period,
       stocksMb: w.stocksMb,
       weeklyChangeMb: w.weeklyChangeMb,
     })) ?? [];
+    // No Redis seed → fetch crude stocks directly from EIA (self-host path).
+    if (crudeWeeks.length === 0) {
+      try {
+        const direct = await fetchCrudeInventoriesDirect();
+        crudeWeeks = direct.weeks;
+      } catch { /* EIA key missing or upstream down — leave empty */ }
+    }
 
     const spr = sprRaw
       ? {
@@ -94,11 +102,17 @@ export async function getOilInventories(
         }
       : undefined;
 
-    const natGasWeeks = natGasRaw?.weeks?.map((w) => ({
+    let natGasWeeks = natGasRaw?.weeks?.map((w) => ({
       period: w.period,
       storBcf: w.storBcf,
       weeklyChangeBcf: w.weeklyChangeBcf,
     })) ?? [];
+    if (natGasWeeks.length === 0) {
+      try {
+        const direct = await fetchNatGasStorageDirect();
+        natGasWeeks = direct.weeks;
+      } catch { /* EIA key missing or upstream down — leave empty */ }
+    }
 
     const euGas = euGasRaw
       ? {

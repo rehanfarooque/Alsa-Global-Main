@@ -14,7 +14,7 @@ import {
   FREE_MAX_PANELS,
   FREE_MAX_SOURCES,
 } from '@/config';
-import { sanitizeLayersForVariant } from '@/config/map-layer-definitions';
+import { sanitizeLayersForVariant, allLayersEnabledForVariant } from '@/config/map-layer-definitions';
 import type { MapVariant } from '@/config/map-layer-definitions';
 import { initDB, cleanOldSnapshots, isAisConfigured, initAisStream, isOutagesConfigured, disconnectAisStream } from '@/services';
 import { isProUser } from '@/services/widget-store';
@@ -517,7 +517,7 @@ export class App {
     // The `alsaglobal-variant-applied` marker is written ONLY after a seed
     // completes, so it lags `alsaglobal-variant` across a switch and gives
     // us a reliable "did we already seed this variant's defaults?" signal.
-    const appliedVariant = localStorage.getItem('alsaglobal-variant-applied');
+    const appliedVariant = localStorage.getItem('alsaglobal-variant-applied-v2');
     const currentVariant = SITE_VARIANT;
     console.log(`[App] Variant check: applied="${appliedVariant}", current="${currentVariant}"`);
     if (appliedVariant !== currentVariant) {
@@ -525,32 +525,41 @@ export class App {
       // disable panels that don't belong to the new variant.
       console.log('[App] Variant changed - seeding new defaults, disabling cross-variant panels');
       localStorage.setItem('alsaglobal-variant', currentVariant);
-      // Reset map layers for the new variant (map layers are not user-personalized the same way)
+      // Reset map layers for the new variant. Enable EVERY layer in the
+      // variant's curated set (not just the few DEFAULT_MAP_LAYERS pre-ticked)
+      // so switching a tab auto-selects all its relevant layers. The
+      // choropleth-exclusivity pass then trims to one active choropleth.
       localStorage.removeItem(STORAGE_KEYS.mapLayers);
       mapLayers = normalizeExclusiveChoropleths(
-        sanitizeLayersForVariant({ ...defaultLayers }, currentVariant as MapVariant), null,
+        allLayersEnabledForVariant(currentVariant as MapVariant), null,
       );
-      // Load existing panel prefs (if any), disable panels not belonging to the new variant
-      panelSettings = loadFromStorage<Record<string, PanelConfig>>(STORAGE_KEYS.panels, {});
+      // Switching variants RESETS panels to the new variant's defaults so the
+      // tab auto-selects its own panels (Tech tab → tech panels ticked, etc.).
+      // We rebuild panelSettings from scratch rather than mutating the old map,
+      // because the old map already contains every ALL_PANELS key (from the
+      // cross-variant merge below) — so a "only add if missing" loop would
+      // leave the variant's own default panels stuck at enabled:false and
+      // nothing would auto-tick. (This was the bug behind "switching tabs
+      // doesn't select the related panels".)
+      const prevSettings = loadFromStorage<Record<string, PanelConfig>>(STORAGE_KEYS.panels, {});
       const newVariantKeys = new Set(VARIANT_DEFAULTS[currentVariant] ?? []);
-      for (const key of Object.keys(panelSettings)) {
-        if (!newVariantKeys.has(key) && !isDynamicPanel(key) && panelSettings[key]) {
-          panelSettings[key] = { ...panelSettings[key]!, enabled: false };
-        }
-      }
+      panelSettings = {};
+      // 1. Every panel in the new variant's default set → its variant config
+      //    (enabled per that variant's definition). This is the auto-select.
       for (const key of newVariantKeys) {
-        if (!(key in panelSettings)) {
-          panelSettings[key] = { ...getEffectivePanelConfig(key, currentVariant) };
-        }
+        panelSettings[key] = { ...getEffectivePanelConfig(key, currentVariant) };
       }
-      // Merge in every other panel from ALL_PANELS so cross-variant panels
-      // stay registered (disabled) and visible in the picker. Without this
-      // the user loses access to e.g. happy-variant panels after switching
-      // away — the picker only shows the keys present in panelSettings.
+      // 2. Every OTHER panel from the unified registry → present but disabled,
+      //    so it still shows (unticked) in the picker for cross-variant use.
       for (const key of Object.keys(ALL_PANELS)) {
         if (!(key in panelSettings)) {
-          const config = getEffectivePanelConfig(key, currentVariant);
-          panelSettings[key] = { ...config, enabled: newVariantKeys.has(key) && config.enabled };
+          panelSettings[key] = { ...getEffectivePanelConfig(key, currentVariant), enabled: false };
+        }
+      }
+      // 3. Preserve user-created / desktop / MCP dynamic panels across the switch.
+      for (const key of Object.keys(prevSettings)) {
+        if (isDynamicPanel(key) && prevSettings[key]) {
+          panelSettings[key] = prevSettings[key]!;
         }
       }
       // Persist the seeded values so subsequent reloads keep them and any
@@ -558,7 +567,7 @@ export class App {
       saveToStorage(STORAGE_KEYS.mapLayers, mapLayers);
       saveToStorage(STORAGE_KEYS.panels, panelSettings);
       // Mark this variant as applied so subsequent reloads skip the seed.
-      try { localStorage.setItem('alsaglobal-variant-applied', currentVariant); } catch { /* ignore */ }
+      try { localStorage.setItem('alsaglobal-variant-applied-v2', currentVariant); } catch { /* ignore */ }
       // Pre-mark the cross-variant picker exposure migration as done — we
       // just performed the equivalent merge so the else-branch migration
       // doesn't need to run again.

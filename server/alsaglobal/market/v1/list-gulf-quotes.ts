@@ -15,21 +15,22 @@ import type {
   ListGulfQuotesResponse,
   GulfQuote,
 } from '../../../../src/generated/server/alsaglobal/market/v1/service_server';
-import { fetchStooqQuote } from './_shared';
+import { fetchQuote } from './_shared';
 
-// Stooq symbols that reliably return data for GCC / oil-region assets.
-// type: 'index' | 'currency' | 'commodity'
-const GULF_ASSETS: Array<Omit<GulfQuote, 'price' | 'change' | 'sparkline'> & { stooqSymbol: string }> = [
-  // Saudi Arabia direct index
-  { symbol: '^TASI',   stooqSymbol: '^tasi',  name: 'Saudi Tadawul (TASI)',   flag: '🇸🇦', country: 'Saudi Arabia', type: 'index'     },
-  // US-listed GCC ETFs (iShares MSCI series)
-  { symbol: 'UAE',     stooqSymbol: 'uae.us', name: 'UAE Market (iShares)',   flag: '🇦🇪', country: 'UAE',          type: 'index'     },
-  { symbol: 'QAT',     stooqSymbol: 'qat.us', name: 'Qatar Market (iShares)', flag: '🇶🇦', country: 'Qatar',        type: 'index'     },
-  { symbol: 'KWT',     stooqSymbol: 'kwt.us', name: 'Kuwait Market (iShares)',flag: '🇰🇼', country: 'Kuwait',       type: 'index'     },
-  // Gulf-critical commodities
-  { symbol: 'BZ=F',    stooqSymbol: 'cb.f',   name: 'Brent Crude Oil',        flag: '🛢️',  country: '',             type: 'commodity' },
-  { symbol: 'CL=F',    stooqSymbol: 'cl.f',   name: 'WTI Crude Oil',          flag: '🛢️',  country: '',             type: 'commodity' },
-  { symbol: 'GC=F',    stooqSymbol: 'gc.f',   name: 'Gold (Comex)',            flag: '🥇',  country: '',             type: 'commodity' },
+// Yahoo-style symbols routed through the unified fetchQuote cascade (Yahoo →
+// free fallbacks → Stooq), so GCC assets resolve from VPS IPs that Stooq
+// blocks. type: 'index' | 'currency' | 'commodity'
+const GULF_ASSETS: Array<Omit<GulfQuote, 'price' | 'change' | 'sparkline'> & { fetchSymbol: string }> = [
+  // Saudi Arabia direct index (Yahoo carries ^TASI)
+  { symbol: '^TASI',   fetchSymbol: '^TASI',  name: 'Saudi Tadawul (TASI)',   flag: '🇸🇦', country: 'Saudi Arabia', type: 'index'     },
+  // US-listed GCC ETFs (iShares MSCI series) — Yahoo carries these directly
+  { symbol: 'UAE',     fetchSymbol: 'UAE',    name: 'UAE Market (iShares)',   flag: '🇦🇪', country: 'UAE',          type: 'index'     },
+  { symbol: 'QAT',     fetchSymbol: 'QAT',    name: 'Qatar Market (iShares)', flag: '🇶🇦', country: 'Qatar',        type: 'index'     },
+  { symbol: 'KWT',     fetchSymbol: 'KWT',    name: 'Kuwait Market (iShares)',flag: '🇰🇼', country: 'Kuwait',       type: 'index'     },
+  // Gulf-critical commodities (Yahoo futures; metals via gold-api fallback)
+  { symbol: 'BZ=F',    fetchSymbol: 'BZ=F',   name: 'Brent Crude Oil',        flag: '🛢️',  country: '',             type: 'commodity' },
+  { symbol: 'CL=F',    fetchSymbol: 'CL=F',   name: 'WTI Crude Oil',          flag: '🛢️',  country: '',             type: 'commodity' },
+  { symbol: 'GC=F',    fetchSymbol: 'GC=F',   name: 'Gold (Comex)',            flag: '🥇',  country: '',             type: 'commodity' },
 ];
 
 export async function listGulfQuotes(
@@ -38,8 +39,8 @@ export async function listGulfQuotes(
 ): Promise<ListGulfQuotesResponse> {
   try {
     const results = await Promise.allSettled(
-      GULF_ASSETS.map(async ({ stooqSymbol, ...meta }) => {
-        const q = await fetchStooqQuote(stooqSymbol);
+      GULF_ASSETS.map(async ({ fetchSymbol, ...meta }) => {
+        const q = await fetchQuote(fetchSymbol);
         if (!q) return null;
         return { ...meta, price: q.price, change: q.change, sparkline: q.sparkline } as GulfQuote;
       }),

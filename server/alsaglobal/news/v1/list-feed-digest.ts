@@ -42,9 +42,15 @@ const _procCache = new Map<string, { data: ListFeedDigestResponse; ts: number }>
 const _procInFlight = new Map<string, Promise<ListFeedDigestResponse | null>>();
 const ITEMS_PER_FEED = 5;
 const MAX_ITEMS_PER_CATEGORY = 20;
-const FEED_TIMEOUT_MS = 8_000;
-const OVERALL_DEADLINE_MS = 25_000;
-const BATCH_CONCURRENCY = 20;
+// Per-feed timeout kept tight so a handful of dead/abandoned feed URLs
+// (Reuters' old rss, CNN's edition feeds, etc.) can't each burn 8s and drag
+// the COLD digest past the client's patience — a slow first response was
+// tripping the data-loader circuit breaker, which then served empty
+// categories ("No news available") for the whole 30s cooldown. 5s still
+// clears any feed that's actually alive.
+const FEED_TIMEOUT_MS = 5_000;
+const OVERALL_DEADLINE_MS = 18_000;
+const BATCH_CONCURRENCY = 24;
 
 // U3 — hard freshness floor (default 96h, env override NEWS_MAX_AGE_HOURS).
 // Items older than this are dropped before scoring. The 24h `recencyScore`

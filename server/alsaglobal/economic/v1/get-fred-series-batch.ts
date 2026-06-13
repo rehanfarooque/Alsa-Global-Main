@@ -15,11 +15,11 @@ import { toUniqueSortedLimited } from '../../../_shared/normalize-list';
 import { applyFredObservationLimit, fredSeedKey, normalizeFredLimit } from './_fred-shared';
 import { CHROME_UA } from '../../../_shared/constants';
 
-// Series that can be fetched live from FRED (US Treasury yields + VIX + FRED macro)
-const FRED_LIVE_ALLOWED = new Set([
-  'DGS1MO', 'DGS3MO', 'DGS6MO', 'DGS1', 'DGS2', 'DGS5', 'DGS10', 'DGS30',
-  'VIXCLS', 'FEDFUNDS', 'SOFR', 'T10Y2Y', 'T10Y3M',
-]);
+// Series fetchable live from the FRED API when the Redis seed is empty
+// (self-host path). Everything in ALLOWED_SERIES is a real FRED series except
+// the entries seeded from non-FRED pipelines: GSCPI (NY Fed via ais-relay)
+// and the ECB short rates (ESTR / EURIBOR*, seeded by seed-ecb-short-rates).
+const FRED_LIVE_EXCLUDED = new Set(['GSCPI', 'ESTR', 'EURIBOR3M', 'EURIBOR6M', 'EURIBOR1Y']);
 
 const FRED_SERIES_META: Record<string, { title: string; units: string }> = {
   DGS1MO: { title: '1-Month Treasury', units: '%' },
@@ -35,19 +35,34 @@ const FRED_SERIES_META: Record<string, { title: string; units: string }> = {
   SOFR:   { title: 'Secured Overnight Financing Rate', units: '%' },
   T10Y2Y: { title: '10-Year minus 2-Year', units: '%' },
   T10Y3M: { title: '10-Year minus 3-Month', units: '%' },
+  CPIAUCSL: { title: 'Consumer Price Index', units: 'Index' },
+  UNRATE: { title: 'Unemployment Rate', units: '%' },
+  GDP: { title: 'Gross Domestic Product', units: '$B' },
+  M2SL: { title: 'M2 Money Stock', units: '$B' },
+  WALCL: { title: 'Fed Balance Sheet', units: '$M' },
+  DCOILWTICO: { title: 'WTI Crude Oil', units: '$/bbl' },
+  BAMLH0A0HYM2: { title: 'High Yield OAS', units: '%' },
+  BAMLC0A0CM: { title: 'IG Corporate OAS', units: '%' },
+  ICSA: { title: 'Initial Jobless Claims', units: 'Claims' },
+  MORTGAGE30US: { title: '30-Year Mortgage Rate', units: '%' },
+  STLFSI4: { title: 'St. Louis Fed Financial Stress', units: 'Index' },
 };
 
 async function fetchFredSeriesLive(seriesId: string, apiKey: string, limit: number): Promise<FredSeries | null> {
   try {
-    const startDate = new Date(Date.now() - Math.max(limit, 40) * 2 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-    const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&observation_start=${startDate}&api_key=${encodeURIComponent(apiKey)}&file_type=json`;
+    // sort_order=desc + limit returns exactly the last N observations
+    // regardless of series frequency (daily, monthly, quarterly). The old
+    // observation_start window assumed daily data, which starved monthly
+    // series like CPIAUCSL (3 rows instead of the 13 needed for YoY).
+    const fetchN = Math.max(limit, 14);
+    const url = `https://api.stlouisfed.org/fred/series/observations?series_id=${seriesId}&sort_order=desc&limit=${fetchN}&api_key=${encodeURIComponent(apiKey)}&file_type=json`;
     const resp = await fetch(url, { headers: { 'User-Agent': CHROME_UA }, signal: AbortSignal.timeout(10_000) });
     if (!resp.ok) return null;
     const json = await resp.json() as { observations?: Array<{ date: string; value: string }> };
     const observations = (json.observations ?? [])
       .filter(o => o.value !== '.' && o.value !== '')
-      .slice(-limit)
-      .map(o => ({ date: o.date, value: parseFloat(o.value) }));
+      .map(o => ({ date: o.date, value: parseFloat(o.value) }))
+      .reverse(); // desc → chronological
     if (observations.length === 0) return null;
     const meta = FRED_SERIES_META[seriesId] ?? { title: seriesId, units: '' };
     return { seriesId, title: meta.title, units: meta.units, frequency: 'd', observations };
@@ -91,7 +106,7 @@ export async function getFredSeriesBatch(
     }
 
     // If Redis returned no data, fall back to live FRED API for supported series
-    const missingIds = limitedList.filter(id => !results[id] && FRED_LIVE_ALLOWED.has(id));
+    const missingIds = limitedList.filter(id => !results[id] && !FRED_LIVE_EXCLUDED.has(id));
     if (missingIds.length > 0) {
       const fredKey = process.env.FRED_API_KEY;
       if (fredKey) {

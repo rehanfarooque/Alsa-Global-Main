@@ -6,6 +6,7 @@ import type {
   Satellite,
 } from '../../../../src/generated/server/alsaglobal/intelligence/v1/service_server';
 import { getCachedJson } from '../../../_shared/redis';
+import { fetchSatellitesDirect } from './_satellites-direct';
 
 const REDIS_KEY = 'intelligence:satellites:tle:v1';
 
@@ -49,18 +50,25 @@ export const listSatellites: IntelligenceServiceHandler['listSatellites'] = asyn
   _ctx: ServerContext,
   req: ListSatellitesRequest,
 ): Promise<ListSatellitesResponse> => {
-  const cached = await getCachedJson(REDIS_KEY, true);
-  if (!cached || typeof cached !== 'object') {
-    return { satellites: [] };
-  }
-
-  const payload = cached as SatelliteCacheResponse;
-  if (!Array.isArray(payload.satellites)) {
-    return { satellites: [] };
-  }
-
   const filterCountry = req.country?.trim().toUpperCase();
-  const satellites = payload.satellites
+
+  // 1. Seeded Redis cache (Railway relay path)
+  let items: SatelliteCacheItem[] = [];
+  const cached = await getCachedJson(REDIS_KEY, true);
+  if (cached && typeof cached === 'object' && Array.isArray((cached as SatelliteCacheResponse).satellites)) {
+    items = (cached as SatelliteCacheResponse).satellites!;
+  }
+
+  // 2. Direct CelesTrak fetch (self-host path — free, no key)
+  if (items.length === 0) {
+    try {
+      items = await fetchSatellitesDirect();
+    } catch {
+      return { satellites: [] };
+    }
+  }
+
+  const satellites = items
     .map(toSatellite)
     .filter((satellite) => {
       if (!filterCountry) return true;

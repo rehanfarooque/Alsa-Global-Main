@@ -162,6 +162,25 @@ export function getAllowedLayerKeys(variant: MapVariant): Set<keyof MapLayers> {
   return new Set(VARIANT_LAYER_ORDER[variant] ?? VARIANT_LAYER_ORDER.full);
 }
 
+/**
+ * Build a MapLayers object with EVERY layer in the variant's curated set
+ * turned ON, and every other layer OFF. Used when switching variants so the
+ * tab auto-selects (ticks) all of its relevant layers, not just the handful
+ * the variant's DEFAULT_MAP_LAYERS happened to pre-enable.
+ *
+ * Choropleth layers (ciiChoropleth, resilienceScore, dayNight, etc.) are still
+ * subject to normalizeExclusiveChoropleths() downstream, which keeps only one
+ * active — so enabling them all here is safe; the exclusivity pass trims it.
+ */
+export function allLayersEnabledForVariant(variant: MapVariant): MapLayers {
+  const allowed = getAllowedLayerKeys(variant);
+  const out = {} as MapLayers;
+  for (const key of Object.keys(LAYER_REGISTRY) as Array<keyof MapLayers>) {
+    out[key] = allowed.has(key);
+  }
+  return out;
+}
+
 export function sanitizeLayersForVariant(layers: MapLayers, variant: MapVariant): MapLayers {
   const allowed = getAllowedLayerKeys(variant);
   const sanitized = { ...layers };

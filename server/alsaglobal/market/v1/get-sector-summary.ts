@@ -1,6 +1,10 @@
 /**
- * AlsaGlobal: GetSectorSummary — live sector ETF data from Stooq.
+ * AlsaGlobal: GetSectorSummary — live sector ETF performance.
  * Uses SPDR sector ETFs (XLK, XLF, etc.) as proxies for US sector performance.
+ *
+ * Goes through the unified fetchQuote cascade (Yahoo → free fallbacks →
+ * Stooq) rather than Stooq alone, so it works from data-center / VPS IPs
+ * where Stooq's TCP connection hangs.
  */
 
 import type {
@@ -9,7 +13,7 @@ import type {
   GetSectorSummaryResponse,
   SectorPerformance,
 } from '../../../../src/generated/server/alsaglobal/market/v1/service_server';
-import { fetchStooqQuote } from './_shared';
+import { fetchQuote } from './_shared';
 
 const SECTOR_ETFS: Array<{ symbol: string; name: string }> = [
   { symbol: 'XLK', name: 'Technology' },
@@ -32,7 +36,7 @@ export async function getSectorSummary(
   try {
     const results = await Promise.allSettled(
       SECTOR_ETFS.map(async (s) => {
-        const q = await fetchStooqQuote(s.symbol);
+        const q = await fetchQuote(s.symbol);
         return q ? { symbol: s.symbol, name: s.name, change: q.change } : null;
       }),
     );
